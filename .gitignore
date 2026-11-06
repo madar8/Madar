@@ -1,0 +1,12 @@
+data/
+.demo-data/
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+*.db
+*.db-*
+backups/
+*.zip
+.DS_Store
