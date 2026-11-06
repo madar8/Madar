@@ -345,6 +345,7 @@ class Handler(BaseHTTPRequestHandler):
     elif b.get('action')=='reset': c.execute('UPDATE users SET password=? WHERE id=?',(hash_password(b.get('password')),uid))
     else: raise Problem('إجراء غير صالح')
     c.execute('DELETE FROM sessions WHERE user_id=?',(uid,));log(c,u,b['action'],'users',uid,target['company_id']);c.commit();return self.reply(200,{'ok':True})
+   if path=='/api/data' and self.command=='GET': return self.reply(200,{m:collection(c,u,m) for m in READ[u['role']]})
    if path=='/api/audit' and self.command=='GET':
     if u['role'] not in ('owner','hr'): raise Problem('ليست لديك صلاحية',403)
     return self.reply(200,[dict(r) for r in c.execute('SELECT actor,action,module,record_id,company_id,created FROM audit ORDER BY id DESC LIMIT 500')])

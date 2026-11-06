@@ -1,0 +1,14 @@
+{
+  "name": "madar-hr-trial",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "build": "node scripts/prepare-netlify.mjs",
+    "test": "node --test tests-node/*.test.mjs",
+    "start": "node trial/local.mjs",
+    "check": "node --check web/app.js && node --check trial/core.mjs && node --check netlify/functions/api.mjs"
+  },
+  "dependencies": { "@netlify/blobs": "11.1.8" }
+}

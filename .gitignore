@@ -10,3 +10,7 @@ __pycache__/
 backups/
 *.zip
 .DS_Store
+
+node_modules/
+.trial-data/
+.netlify/

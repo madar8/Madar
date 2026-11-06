@@ -1,0 +1,215 @@
+{
+  "modules": {
+    "companies": [
+      "name",
+      "sector",
+      "contact",
+      "email",
+      "plan",
+      "status"
+    ],
+    "employees": [
+      "name",
+      "email",
+      "phone",
+      "title",
+      "department",
+      "start_date",
+      "status",
+      "base",
+      "allowance",
+      "deduction",
+      "leave_balance"
+    ],
+    "jobs": [
+      "title",
+      "department",
+      "location",
+      "openings",
+      "status",
+      "description"
+    ],
+    "candidates": [
+      "name",
+      "email",
+      "phone",
+      "job_id",
+      "stage",
+      "notes"
+    ],
+    "requests": [
+      "employee_id",
+      "kind",
+      "start_date",
+      "end_date",
+      "reason",
+      "status"
+    ],
+    "attendance": [
+      "employee_id",
+      "day",
+      "check_in",
+      "check_out"
+    ],
+    "contracts": [
+      "employee_id",
+      "title",
+      "start_date",
+      "end_date",
+      "status",
+      "notes"
+    ],
+    "tickets": [
+      "title",
+      "priority",
+      "description",
+      "status"
+    ],
+    "invoices": [
+      "title",
+      "amount",
+      "tax_bps",
+      "due_date",
+      "status"
+    ],
+    "documents": [
+      "title",
+      "employee_id",
+      "expires",
+      "filename",
+      "mime",
+      "storage"
+    ],
+    "payroll": [
+      "period",
+      "status",
+      "items",
+      "total"
+    ]
+  },
+  "states": {
+    "employees": [
+      "نشط",
+      "غير نشط"
+    ],
+    "companies": [
+      "نشط",
+      "موقوف"
+    ],
+    "jobs": [
+      "مفتوحة",
+      "مغلقة"
+    ],
+    "candidates": [
+      "مرفوض",
+      "مقابلة",
+      "جديد",
+      "فرز",
+      "عرض",
+      "تم التوظيف"
+    ],
+    "requests": [
+      "مرفوض",
+      "معلق",
+      "موافق"
+    ],
+    "tickets": [
+      "قيد المعالجة",
+      "مغلق",
+      "جديد"
+    ],
+    "contracts": [
+      "ساري",
+      "مسودة",
+      "منتهي"
+    ],
+    "invoices": [
+      "مسودة",
+      "مرسلة",
+      "مدفوعة"
+    ]
+  },
+  "read": {
+    "owner": [
+      "attendance",
+      "employees",
+      "documents",
+      "jobs",
+      "candidates",
+      "tickets",
+      "companies",
+      "contracts",
+      "invoices",
+      "requests",
+      "payroll"
+    ],
+    "hr": [
+      "attendance",
+      "employees",
+      "documents",
+      "jobs",
+      "candidates",
+      "tickets",
+      "companies",
+      "contracts",
+      "invoices",
+      "requests",
+      "payroll"
+    ],
+    "client": [
+      "attendance",
+      "employees",
+      "documents",
+      "jobs",
+      "candidates",
+      "tickets",
+      "contracts",
+      "invoices",
+      "requests",
+      "payroll"
+    ],
+    "employee": [
+      "attendance",
+      "contracts",
+      "requests",
+      "employees",
+      "documents",
+      "payroll",
+      "tickets"
+    ]
+  },
+  "write": {
+    "owner": [
+      "attendance",
+      "employees",
+      "jobs",
+      "candidates",
+      "tickets",
+      "companies",
+      "contracts",
+      "invoices",
+      "requests"
+    ],
+    "hr": [
+      "attendance",
+      "employees",
+      "jobs",
+      "candidates",
+      "tickets",
+      "companies",
+      "contracts",
+      "invoices",
+      "requests"
+    ],
+    "client": [
+      "jobs",
+      "requests",
+      "tickets"
+    ],
+    "employee": [
+      "attendance",
+      "requests",
+      "tickets"
+    ]
+  }
+}
