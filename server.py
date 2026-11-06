@@ -277,12 +277,31 @@ class Handler(BaseHTTPRequestHandler):
    if urlparse(self.headers['Origin']).netloc != self.headers.get('Host'): raise Problem('مصدر الطلب غير مسموح',403)
   if not path.startswith('/api/'):
    if self.command!='GET': raise Problem('غير مسموح',405)
-   name={'/':'index.html','/app':'index.html','/styles.css':'styles.css','/app.js':'app.js'}.get(path)
+   name={'/':'index.html','/app':'index.html','/setup':'index.html','/styles.css':'styles.css','/app.js':'app.js'}.get(path)
    if not name: raise Problem('الصفحة غير موجودة',404)
    data=(ROOT/'web'/name).read_bytes();self.send_response(200);self.headers_out('text/html; charset=utf-8' if name.endswith('.html') else 'text/css; charset=utf-8' if name.endswith('.css') else 'text/javascript; charset=utf-8',len(data));self.end_headers();self.wfile.write(data);return
-  if path=='/api/health' and self.command=='GET': return self.reply(200,{'status':'ok','version':'0.1.0'})
+  if path=='/api/health' and self.command=='GET':
+   with connect() as c: pending=len(os.environ.get('MADAR_SETUP_TOKEN',''))>=32 and not c.execute('SELECT 1 FROM users LIMIT 1').fetchone()
+   return self.reply(200,{'status':'ok','version':'0.1.1','setup_required':pending})
   with connect() as c:
    if self.command=='POST': c.execute('BEGIN IMMEDIATE')
+   if path=='/api/setup' and self.command=='POST':
+    expected=os.environ.get('MADAR_SETUP_TOKEN','')
+    if len(expected)<32: raise Problem('التهيئة عبر الويب غير مفعلة',404)
+    if c.execute('SELECT 1 FROM users LIMIT 1').fetchone(): raise Problem('تمت تهيئة المنصة مسبقًا',409)
+    b=self.body();provided=b.get('token','')
+    attempt=c.execute("SELECT * FROM login_attempts WHERE key='bootstrap'").fetchone()
+    if attempt and attempt['reset']>time.time() and attempt['attempts']>=10: raise Problem('محاولات كثيرة؛ أعد المحاولة بعد 15 دقيقة',429)
+    if not isinstance(provided,str) or not hmac.compare_digest(provided.encode(),expected.encode()):
+     count=attempt['attempts']+1 if attempt and attempt['reset']>time.time() else 1
+     reset=attempt['reset'] if attempt and attempt['reset']>time.time() else time.time()+900
+     c.execute('INSERT OR REPLACE INTO login_attempts VALUES(?,?,?)',('bootstrap',count,reset));c.commit();raise Problem('رمز التهيئة غير صحيح',403)
+    required(b,'email');required(b,'name')
+    if not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+',b['email']): raise Problem('بريد غير صالح')
+    uid=secrets.token_hex(12)
+    c.execute('INSERT INTO users(id,email,name,password,role) VALUES(?,?,?,?,?)',(uid,b['email'].strip().lower(),b['name'],hash_password(b.get('password')),'owner'))
+    log(c,{'id':uid,'name':b['name']},'تهيئة المنصة','users',uid)
+    c.execute("DELETE FROM login_attempts WHERE key='bootstrap'");c.commit();return self.reply(201,{'ok':True})
    if path=='/api/login' and self.command=='POST':
     body=self.body();email=str(body.get('email','')).strip().lower();password=body.get('password','')
     if not isinstance(password,str) or len(password)>200: raise Problem('بيانات الدخول غير صحيحة',401)

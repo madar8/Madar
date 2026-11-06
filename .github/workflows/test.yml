@@ -13,6 +13,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+      - run: pip install -r requirements.txt
+      - run: gunicorn --check-config --config gunicorn.conf.py wsgi:application
       - run: python -m unittest discover -s tests -v
-      - run: python -m py_compile server.py backup.py
+      - run: python -m py_compile server.py backup.py wsgi.py gunicorn.conf.py
       - run: node --check web/app.js
