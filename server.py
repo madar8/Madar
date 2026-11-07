@@ -336,6 +336,17 @@ class Handler(BaseHTTPRequestHandler):
     c.execute('INSERT INTO users(id,email,name,password,role) VALUES(?,?,?,?,?)',(uid,b['email'].strip().lower(),b['name'],hash_password(b.get('password')),'owner'))
     log(c,{'id':uid,'name':b['name']},'تهيئة المنصة','users',uid)
     c.execute("DELETE FROM login_attempts WHERE key='bootstrap'");c.commit();return self.reply(201,{'ok':True})
+   if path=='/api/enrollment-status' and self.command=='POST':
+    b=self.body();nid=b.get('national_id','')
+    if not valid_national_id(nid): raise Problem('رقم الهوية غير صالح',400)
+    key=invite_digest('status:'+nid);attempt=c.execute('SELECT * FROM login_attempts WHERE key=?',(key,)).fetchone()
+    if attempt and attempt['reset']>time.time() and attempt['attempts']>=30: raise Problem('محاولات كثيرة؛ أعد المحاولة لاحقًا',429)
+    count=attempt['attempts']+1 if attempt and attempt['reset']>time.time() else 1
+    reset=attempt['reset'] if attempt and attempt['reset']>time.time() else time.time()+900
+    c.execute('INSERT OR REPLACE INTO login_attempts VALUES(?,?,?)',(key,count,reset))
+    row=c.execute('SELECT e.invite_used,t.enabled FROM employee_enrollment e LEFT JOIN totp_accounts t ON t.user_id=e.user_id WHERE e.national_id=?',(nid,)).fetchone()
+    c.commit()
+    return self.reply(200,{'enrolled':bool(row and row['invite_used'] and row['enabled'])})
    if path=='/api/enroll-begin' and self.command=='POST':
     b=self.body();nid=b.get('national_id','');last=b.get('last4','');invite=b.get('invite','')
     if not valid_national_id(nid) or not isinstance(last,str) or not hmac.compare_digest(nid[-4:],last): raise Problem('بيانات التفعيل غير صحيحة',403)
