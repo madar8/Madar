@@ -116,6 +116,7 @@ export function createHandler({stateStore,fileStore,setupToken='',recoveryKey=''
     const key='activate:'+sha(identity);attempt(s,key);
     const user=s.users.find(x=>x.role==='employee'&&x.username===identity);
     if(!user?.activation_hash||user.activation_expires<Date.now()||!same(sha(b.code),user.activation_hash))failedAttempt(s,key);
+    if(!s.records.some(e=>e.module==='employees'&&e.id===user.employee_id&&e.status==='نشط'))fail('الحساب غير متاح للتفعيل؛ راجع المسؤول',403);
     user.password=await hashPassword(b.password);user.active=1;delete user.activation_hash;delete user.activation_expires;s.sessions=s.sessions.filter(x=>x.user_id!==user.id);delete s.attempts[key];audit(s,user,'تفعيل حساب الموظف','users',user.id,user.company_id);await commit();return response({ok:true});
    }
    if(path==='/api/login'&&b){if(typeof b.email!=='string'||b.email.length>254)fail('بيانات غير صالحة');const identifier=b.email.trim().toLowerCase().replace(/[٠-٩]/g,c=>String('٠١٢٣٤٥٦٧٨٩'.indexOf(c))).replace(/[۰-۹]/g,c=>String('۰۱۲۳۴۵۶۷۸۹'.indexOf(c)));const u=s.users.find(x=>x.active&&(x.email===identifier||x.username===identifier));const key=sha(u?.email||identifier);attempt(s,key);if(!u||!await verify(b.password,u.password)){failedAttempt(s,key);}delete s.attempts[key];const raw=token();s.sessions.push({token:sha(raw),csrf:token(),user_id:u.id,expires:Date.now()+SESSION_MS});audit(s,u,'تسجيل دخول','users');await commit();return response({ok:true},200,{'Set-Cookie':cookie(raw,secure)});}
