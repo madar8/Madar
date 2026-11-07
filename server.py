@@ -277,9 +277,9 @@ class Handler(BaseHTTPRequestHandler):
    if urlparse(self.headers['Origin']).netloc != self.headers.get('Host'): raise Problem('مصدر الطلب غير مسموح',403)
   if not path.startswith('/api/'):
    if self.command!='GET': raise Problem('غير مسموح',405)
-   name={'/':'index.html','/app':'index.html','/setup':'index.html','/styles.css':'styles.css','/app.js':'app.js'}.get(path)
+   name={'/':'index.html','/app':'index.html','/setup':'index.html','/styles.css':'styles.css','/app.js':'app.js','/fonts/noto-sans-arabic.woff2':'fonts/noto-sans-arabic.woff2'}.get(path)
    if not name: raise Problem('الصفحة غير موجودة',404)
-   data=(ROOT/'web'/name).read_bytes();self.send_response(200);self.headers_out('text/html; charset=utf-8' if name.endswith('.html') else 'text/css; charset=utf-8' if name.endswith('.css') else 'text/javascript; charset=utf-8',len(data));self.end_headers();self.wfile.write(data);return
+   data=(ROOT/'web'/name).read_bytes();self.send_response(200);self.headers_out('text/html; charset=utf-8' if name.endswith('.html') else 'text/css; charset=utf-8' if name.endswith('.css') else 'font/woff2' if name.endswith('.woff2') else 'text/javascript; charset=utf-8',len(data));self.end_headers();self.wfile.write(data);return
   if path=='/api/health' and self.command=='GET':
    with connect() as c: pending=len(os.environ.get('MADAR_SETUP_TOKEN',''))>=32 and not c.execute('SELECT 1 FROM users LIMIT 1').fetchone()
    return self.reply(200,{'status':'ok','version':'0.1.1','setup_required':pending})
