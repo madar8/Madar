@@ -21,7 +21,7 @@ function required(d,k){if(typeof d[k]!=='string'||!d[k].trim()||d[k].length>1200
 function date(d,k,optional=false){if(optional&&!d[k])return;if(typeof d[k]!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(d[k])||!Number.isFinite(Date.parse(d[k]))||new Date(d[k]).toISOString().slice(0,10)!==d[k])fail('تاريخ غير صالح: '+k);}
 function integer(d,k,defaultValue=0){d[k]??=defaultValue;if(!Number.isSafeInteger(d[k])||d[k]<0||d[k]>100000000)fail('قيمة رقمية غير صالحة: '+k);}
 const email=e=>typeof e==='string'&&/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)&&e.length<=254;
-function publicUser(u){const {password,...out}=u;return out;}
+function publicUser(u){const {password,activation_hash,activation_expires,...out}=u;return out;}
 function visible(u,r,m){if(['owner','hr'].includes(u.role))return true;if(r.company_id!==u.company_id)return false;if(u.role==='employee'){if(m==='employees')return r.id===u.employee_id;if(['requests','attendance','contracts','documents'].includes(m))return r.employee_id===u.employee_id;if(m==='tickets')return r.created_by===u.id;}return true;}
 function get(s,m,rid){const r=s.records.find(r=>r.module===m&&r.id===rid);if(!r)fail('السجل غير موجود',404);return r;}
 function permitted(u,m,write=false){if(!(write?C.write:C.read)[u.role]?.includes(m))fail('ليست لديك صلاحية',403);}
@@ -54,7 +54,7 @@ function validate(s,u,m,b,old){
 }
 function createRecord(s,u,m,b,rid){permitted(u,m,true);const old=rid?get(s,m,rid):null;if(old&&!visible(u,old,m))fail('ليست لديك صلاحية',403);if(old&&(m==='requests'||u.role==='employee'))fail('لا يسمح بتعديل الطلب بعد إرساله');const {cid,d}=validate(s,u,m,b,old);const out=old?update(old,d,b.version):insert(s,m,cid,d);audit(s,u,old?'تعديل':'إنشاء',m,out.id,cid);return cleanRecord(out);}
 function payroll(s,u,b){if(!['owner','hr'].includes(u.role))fail('ليست لديك صلاحية',403);const cid=b.company_id;get(s,'companies',cid);if(typeof b.period!=='string'||!/^\d{4}-\d{2}$/.test(b.period))fail('الفترة بصيغة YYYY-MM');date({d:b.period+'-01'},'d');if(s.records.some(r=>r.module==='payroll'&&r.company_id===cid&&r.period===b.period))fail('مسير الشهر موجود بالفعل',409);
- const employees=s.records.filter(r=>r.module==='employees'&&r.company_id===cid&&r.status==='نشط');if(!employees.length)fail('لا يوجد موظفون نشطون');const items=employees.map(e=>{const net=e.base+e.allowance-e.deduction;if(net<0)fail('الخصومات تتجاوز المستحقات: '+e.name);return{employee_id:e.id,name:e.name,base:e.base,allowance:e.allowance,deduction:e.deduction,net};});const r=insert(s,'payroll',cid,{period:b.period,status:'مسودة',items,total:items.reduce((n,x)=>n+x.net,0),created_by:u.id});audit(s,u,'إعداد مسير','payroll',r.id,cid);return cleanRecord(r);}
+ const employees=s.records.filter(r=>r.module==='employees'&&r.company_id===cid&&r.status==='نشط');if(!employees.length)fail('لا يوجد موظفون نشطون');const items=employees.map(e=>{if(e.odoo_id&&e.base==null)fail('رواتب ملفات أودو تعرض من كشف أودو؛ لم يستورد راتب أساسي لهذا المسير');const net=e.base+e.allowance-e.deduction;if(net<0)fail('الخصومات تتجاوز المستحقات: '+e.name);return{employee_id:e.id,name:e.name,base:e.base,allowance:e.allowance,deduction:e.deduction,net};});const r=insert(s,'payroll',cid,{period:b.period,status:'مسودة',items,total:items.reduce((n,x)=>n+x.net,0),created_by:u.id});audit(s,u,'إعداد مسير','payroll',r.id,cid);return cleanRecord(r);}
 function action(s,u,m,rid,b){permitted(u,m);const r=get(s,m,rid);if(!visible(u,r,m))fail('ليست لديك صلاحية',403);if(b.version!==r.version)fail('السجل تغير؛ حدّث الصفحة',409);const d=dataOnly(r);
  if(m==='requests'&&['approve','reject'].includes(b.action)){
   if(!['owner','hr','client'].includes(u.role))fail('ليست لديك صلاحية',403);if(r.status!=='معلق')fail('تم البت في الطلب',409);if(u.employee_id===r.employee_id)fail('لا يمكن اعتماد طلبك الشخصي',403);
@@ -110,7 +110,15 @@ export function createHandler({stateStore,fileStore,setupToken='',recoveryKey=''
     await commit();
     return response({ok:true},200,{'Set-Cookie':cookie('',secure,true)});
    }
-   if(path==='/api/login'&&b){if(typeof b.email!=='string'||b.email.length>254)fail('بيانات غير صالحة');const identifier=b.email.trim().toLowerCase();const u=s.users.find(x=>x.active&&(x.email===identifier||x.username===identifier));const key=sha(u?.email||identifier);attempt(s,key);if(!u||!await verify(b.password,u.password)){failedAttempt(s,key);}delete s.attempts[key];const raw=token();s.sessions.push({token:sha(raw),csrf:token(),user_id:u.id,expires:Date.now()+SESSION_MS});audit(s,u,'تسجيل دخول','users');await commit();return response({ok:true},200,{'Set-Cookie':cookie(raw,secure)});}
+   if(path==='/api/activate-employee'&&b){
+    const identity=String(b.identity||'').trim().replace(/[٠-٩]/g,c=>String('٠١٢٣٤٥٦٧٨٩'.indexOf(c)));
+    if(!/^[12][0-9]{9}$/.test(identity)||typeof b.code!=='string'||b.code.length>100)fail('بيانات التفعيل غير صحيحة');
+    const key='activate:'+sha(identity);attempt(s,key);
+    const user=s.users.find(x=>x.role==='employee'&&x.username===identity);
+    if(!user?.activation_hash||user.activation_expires<Date.now()||!same(sha(b.code),user.activation_hash))failedAttempt(s,key);
+    user.password=await hashPassword(b.password);user.active=1;delete user.activation_hash;delete user.activation_expires;s.sessions=s.sessions.filter(x=>x.user_id!==user.id);delete s.attempts[key];audit(s,user,'تفعيل حساب الموظف','users',user.id,user.company_id);await commit();return response({ok:true});
+   }
+   if(path==='/api/login'&&b){if(typeof b.email!=='string'||b.email.length>254)fail('بيانات غير صالحة');const identifier=b.email.trim().toLowerCase().replace(/[٠-٩]/g,c=>String('٠١٢٣٤٥٦٧٨٩'.indexOf(c))).replace(/[۰-۹]/g,c=>String('۰۱۲۳۴۵۶۷۸۹'.indexOf(c)));const u=s.users.find(x=>x.active&&(x.email===identifier||x.username===identifier));const key=sha(u?.email||identifier);attempt(s,key);if(!u||!await verify(b.password,u.password)){failedAttempt(s,key);}delete s.attempts[key];const raw=token();s.sessions.push({token:sha(raw),csrf:token(),user_id:u.id,expires:Date.now()+SESSION_MS});audit(s,u,'تسجيل دخول','users');await commit();return response({ok:true},200,{'Set-Cookie':cookie(raw,secure)});}
    const {u,sess}=session(s,req);if(b&&!same(req.headers.get('x-csrf-token'),sess.csrf))fail('رمز الحماية غير صالح؛ حدّث الصفحة',403);
    if(path==='/api/me'&&!b)return response({...publicUser(u),csrf:sess.csrf,trial:true});
    if(path==='/api/data'&&!b)return response(Object.fromEntries(C.read[u.role].map(m=>[m,list(s,u,m)])));
