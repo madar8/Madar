@@ -62,7 +62,14 @@ export default async function service(req){
  if(b.action==='search'){
  if(me.role!=='owner')fail('للمالك فقط',403);
  if(typeof b.q!=='string'||b.q.trim().length<3||b.q.length>100)fail('اكتب ثلاثة أحرف على الأقل');
- return reply({partners:await use(rpc=>rpc('res.partner','search_read',[[['name','ilike',b.q.trim()],['is_company','=',false]]],{fields:['id','name'],limit:20}))});
+ return reply({partners:await use(async rpc=>{
+ const f=await rpc('hr.employee','fields_get',[],{attributes:['type','relation']});
+ const rels=['work_contact_id','address_home_id','user_partner_id'].filter(k=>f[k]?.relation==='res.partner');
+ if(!rels.length)fail('لا توجد علاقة موظف مدعومة؛ راجع إعداد أودو',409);
+ const staff=await rpc('hr.employee','search_read',[[['name','ilike',b.q.trim()]]],{fields:['id','name',...rels],limit:20});
+ const results=[];for(const e of staff)for(const k of rels)if(e[k]?.[0]&&!results.some(x=>x.id===e[k][0]))results.push({id:e[k][0],name:e.name+' — '+e[k][1]});
+ return results;
+ })});
  }
  if(b.action==='map'){
  if(me.role!=='owner')fail('للمالك فقط',403);
@@ -70,7 +77,15 @@ export default async function service(req){
  if(!Number.isSafeInteger(pid)||pid<=0)fail('اختر جهة الموظف من نتائج أودو');
  if(Object.entries(state.maps).some(([k,v])=>k!==eid&&v.partner_id===pid))fail('ملف أودو مرتبط بموظف آخر');
  if(state.requests.some(r=>r.employee_id===eid))fail('لا يمكن تبديل الربط بعد تقديم طلب؛ راجع مسؤول النظام',409);
- const rows=await use(rpc=>rpc('res.partner','read',[[pid]],{fields:['id','name','is_company']}));
+ const rows=await use(async rpc=>{
+ const f=await rpc('hr.employee','fields_get',[],{attributes:['relation']});
+ const rels=['work_contact_id','address_home_id','user_partner_id'].filter(k=>f[k]?.relation==='res.partner');
+ if(!rels.length)fail('تعذر التحقق من ملف الموظف',409);
+ const domain=[...Array(rels.length-1).fill('|'),...rels.map(k=>[k,'=',pid])];
+ const employees=await rpc('hr.employee','search_read',[domain],{fields:['id'],limit:2});
+ if(employees.length!==1)fail('ملف أودو ليس مرتبطًا بموظف واحد؛ راجع الربط',409);
+ return rpc('res.partner','read',[[pid]],{fields:['id','name','is_company']});
+ });
  if(rows.length!==1||rows[0].is_company)fail('ملف أودو غير صالح');
  state.maps[eid]={partner_id:pid,name:rows[0].name,linked_by:me.id,linked_at:now()};await commit();return reply({ok:true});
  }
