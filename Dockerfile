@@ -8,5 +8,4 @@ COPY --chown=madar:madar web/ ./web/
 USER madar
 ENV MADAR_DATA_DIR=/data PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 EXPOSE 8000
-VOLUME /data
 CMD ["gunicorn", "--config", "gunicorn.conf.py", "wsgi:application"]
