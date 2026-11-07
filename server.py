@@ -438,7 +438,7 @@ class Handler(BaseHTTPRequestHandler):
     invite=secrets.token_urlsafe(24)
     c.execute('INSERT INTO employee_enrollment(user_id,national_id,invite_hash,invite_expires,invite_used) VALUES(?,?,?,?,0) ON CONFLICT(user_id) DO UPDATE SET national_id=excluded.national_id,invite_hash=excluded.invite_hash,invite_expires=excluded.invite_expires,invite_used=0',(uid,nid,invite_digest(invite),time.time()+86400))
     log(c,u,'إصدار دعوة تفعيل','users',uid,target['company_id']);c.commit()
-    return self.reply(200,{'invite':invite,'expires_in_seconds':86400})
+    return self.reply(200,{'activation_link':'https://madar-production-0d74.up.railway.app/?activation='+invite,'expires_in_seconds':86400,'note':'أرسل الرابط للموظف عبر قناة موثوقة؛ يستخدم مرة واحدة خلال 24 ساعة'})
    if path=='/api/users':
     if u['role']!='owner': raise Problem('للمالك فقط',403)
     if self.command=='GET': return self.reply(200,[dict(r) for r in c.execute('SELECT id,name,email,role,company_id,employee_id,active FROM users')])
