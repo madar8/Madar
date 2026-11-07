@@ -12,6 +12,7 @@ const specs=[
  ['payroll','كشوف الرواتب','hr.payslip','employee_id',['name','number','date_from','date_to','state','net_wage','basic_wage','gross_wage','currency_id','contract_id']],
  ['leave','الإجازات','hr.leave','employee_id',['name','date_from','date_to','number_of_days','state','holiday_status_id']],
  ['allocations','أرصدة واستحقاقات الإجازة','hr.leave.allocation','employee_id',['name','date_from','date_to','number_of_days','state','holiday_status_id']],
+ ['loans','السلف والقروض','hr.loan','employee_id',['name','date','state','loan_amount','total_amount','total_paid_amount','balance_amount']],
  ['attendance','الحضور والانصراف','hr.attendance','employee_id',['check_in','check_out','worked_hours']],
  ['custody','العهد العينية','asset.account.request','employee_id',['name','state','date','description','date_request','date_return','asset_id','asset_description','date_delivery','end_date']],
  ['documents','المستندات (بيانات وصفية)','ir.attachment','res_id',['name','mimetype','file_size','create_date','res_model']]
@@ -32,6 +33,20 @@ export async function readProfile(rpc,eid){
   }catch{sections.push({key,label,status:'unavailable',rows:[],columns:{}});}
  }
  return {employee:rows[0],labels:Object.fromEntries(selected.map(k=>[k,schema[k].string])),sections,synced_at:new Date().toISOString(),note:'المزامنة قراءة من أودو. المستندات بيانات وصفية؛ الملفات المرفقة والصور غير منسوخة.'};
+}
+export async function readProfiles(rpc,ids){
+ const schema=await rpc('hr.employee','fields_get',[],{attributes:['string','type']});
+ const selected=fields.filter(k=>schema[k]),rows=await rpc('hr.employee','read',[ids],{fields:selected,context:{active_test:false}});
+ const result=rows.map(e=>({employee:e,labels:Object.fromEntries(selected.map(k=>[k,schema[k].string])),sections:[],synced_at:new Date().toISOString(),note:'قراءة من أودو؛ المرفقات والصور ليست منسوخة.'}));
+ for(const [key,label,model,relation,wanted] of specs){
+  try{
+   const f=await rpc(model,'fields_get',[],{attributes:['string','type']});if(!f[relation])throw Error('Unsupported relation');
+   const cols=[...new Set([relation,...wanted.filter(k=>f[k])])],all=[];let cursor=0,partial=false;
+   for(;;){const domain=[[relation,'in',ids],['id','>',cursor],...(model==='ir.attachment'?[['res_model','=','hr.employee']]:[])];const page=await rpc(model,'search_read',[domain],{fields:cols,limit:1000,order:'id',context:{active_test:false}});all.push(...page);if(page.length<1000)break;if(all.length>=10000){partial=true;break;}const next=page.at(-1).id;if(next<=cursor)throw Error('No progress');cursor=next;}
+   for(const profile of result){const mine=all.filter(r=>(Array.isArray(r[relation])?r[relation][0]:r[relation])===profile.employee.id);profile.sections.push({key,label,status:partial||mine.length>500?'partial':'ok',rows:mine.slice(0,500),columns:Object.fromEntries(wanted.filter(k=>f[k]).map(k=>[k,f[k].string]))});}
+  }catch{for(const profile of result)profile.sections.push({key,label,status:'unavailable',rows:[],columns:{}});}
+ }
+ return result;
 }
 export function nationalId(value){const s=String(value||'').trim().replace(/[٠-٩]/g,c=>String('٠١٢٣٤٥٦٧٨٩'.indexOf(c)));return /^[12][0-9]{9}$/.test(s)?s:null;}
 export default async function employeeFile(req){
@@ -98,6 +113,14 @@ export default async function employeeFile(req){
    const mapped=await services.setJSON('state',mapState,mapEntry?{onlyIfMatch:mapEntry.etag}:{onlyIfNew:true});if(!mapped.modified)conflicts.push('تعارض تحديث ربط الطلبات؛ أعد المزامنة');
    return out({count:imported.length,accounts,conflicts,employees:imported,next:data.at(-1)?.id||cursor,done:data.length<25});
   }
+  if(b.action==='details-batch'){
+   const offset=Number(b.offset||0);if(!Number.isSafeInteger(offset)||offset<0)die('نقطة استئناف غير صالحة');
+   const all=accessible.filter(e=>e.odoo_id).sort((a,b)=>a.odoo_id-b.odoo_id),batch=all.slice(offset,offset+100);
+   if(!batch.length)return out({done:true,count:0,next:offset});
+   const results=await testOdoo(credentials,fetch,rpc=>readProfiles(rpc,batch.map(e=>e.odoo_id)));
+   for(const profile of results)await profiles.setJSON('odoo-employee-'+profile.employee.id,profile);
+   return out({count:results.length,next:offset+batch.length,done:offset+batch.length>=all.length,sections:results[0]?.sections.map(s=>({label:s.label,status:s.status}))});
+  }
   if(b.action==='details'){
    const e=accessible.find(e=>e.id===b.employee_id&&e.odoo_id);if(!e)die('اختر ملفًا مستوردًا');
    const profile=await testOdoo(credentials,fetch,rpc=>readProfile(rpc,e.odoo_id));
@@ -121,7 +144,7 @@ async function run(fn){if(busy)return;busy=true;$('#message').textContent='جا�
 $('#activate').onsubmit=async e=>{e.preventDefault();run(async()=>{const r=await fetch('/api/activate-employee',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({identity:$('#identity').value,code:$('#code').value,password:$('#newpassword').value})});const d=await r.json();if(!r.ok)throw Error(d.error);$('#activate').reset();$('#message').textContent='تم التفعيل. ادخل مدار برقم الهوية وكلمة المرور التي اخترتها.';});};
 $('#sync').onclick=()=>run(async()=>{let cursor=0,total=0,conflicts=[];do{const d=await call({action:'sync',cursor});total+=d.count;conflicts.push(...d.conflicts);$('#message').textContent='تمت مزامنة '+total+' ملفًا…';if(d.done)break;if(d.next<=cursor)throw Error('توقف تقدم المزامنة');cursor=d.next;}while(true);await list();$('#message').textContent='تمت مزامنة '+total+' ملفًا. الحالات التي تحتاج مراجعة: '+conflicts.join('، ');});
 $('#details').onclick=()=>run(async()=>{const d=await call({action:'details',employee_id:$('#employee').value});await view($('#employee').value);$('#message').textContent=d.sections.map(s=>s.label+': '+(s.status==='ok'?'تمت المزامنة ('+s.count+')':s.status==='partial'?'جزئي':'غير متاح')).join('، ');});
-$('#all-details').onclick=()=>run(async()=>{let n=0,failed=[];for(const e of state.employees.filter(e=>e.imported)){try{await call({action:'details',employee_id:e.id});n++;}catch{failed.push(e.name);}$('#message').textContent='مزامنة التفاصيل: '+n+' من '+state.employees.filter(e=>e.imported).length;}$('#message').textContent='اكتملت تفاصيل '+n+' ملفًا. تعذر: '+(failed.join('، ')||'لا شيء')+'؛ راجع داخل كل ملف حالة الأقسام وصلاحياتها.';});
+$('#all-details').onclick=()=>run(async()=>{let offset=0,n=0,issues=new Set();do{const d=await call({action:'details-batch',offset});n+=d.count;for(const x of d.sections||[])if(x.status!=='ok')issues.add(x.label+': '+(x.status==='partial'?'جزئي':'غير متاح'));$('#message').textContent='مزامنة التفاصيل: '+n+' ملفًا…';if(d.done)break;offset=d.next;}while(true);$('#message').textContent='اكتملت مزامنة تفاصيل '+n+' ملفًا. '+(issues.size?'أقسام تحتاج مراجعة: '+[...issues].join('، '):'تمت قراءة الأقسام المتاحة.');});
 $('#view').onclick=()=>run(()=>view($('#employee').value));
 $('#issue').onclick=()=>run(async()=>{const d=await call({action:'activation',user_id:$('#accounts').value});$('#issued').textContent='رمز '+d.name+': '+d.code+' — صالح '+d.expires+'. سلّمه للموظف مباشرة عبر وسيلة خاصة.';$('#message').textContent='أُصدر رمز التفعيل.';});
 (async()=>{try{const r=await fetch('/api/me');if(!r.ok){$('#message').textContent='لتفعيل حسابك استخدم الرمز الذي استلمته من المسؤول. للمزامنة سجّل دخول حساب المالك.';return;}const me=await r.json();csrf=me.csrf;$('#activation').hidden=true;if(me.role==='owner'){$('#admin').hidden=false;await list();}else if(me.role==='employee')await view(me.employee_id);else throw Error('الخدمة للموظف والمالك');}catch(e){$('#message').textContent=e.message;}})();
