@@ -1,3 +1,4 @@
+import {odooConnectionCheck} from './odoo-readonly.mjs';
 import {randomBytes,createHash,scrypt as scryptCallback,timingSafeEqual} from 'node:crypto';
 import {promisify} from 'node:util';
 import C from './config.json' with {type:'json'};
@@ -102,7 +103,7 @@ export function createHandler({stateStore,fileStore,setupToken='',recoveryKey=''
    const entry=await stateStore.getWithMetadata('workspace-v1',{type:'json',consistency:'strong'});s=entry?structuredClone(entry.data):emptyState();etag=entry?.etag;if(s.format!=='madar-trial-v1')fail('تنسيق البيانات غير متوافق',503);
    if(path==='/api/health'&&req.method==='GET')return response({status:'ok',version:'0.2.0-trial',mode:'trial',max_upload_bytes:MAX_FILE,setup_required:setupToken.length>=32&&!s.users.length});
    // Phase 1: employee-only preview. Keep existing stored records intact but disable all legacy HR and admin API routes.
-   const allowed=new Set(['/api/health','/api/setup','/api/login','/api/me','/api/logout','/api/password']);
+   const allowed=new Set(['/api/health','/api/setup','/api/login','/api/me','/api/logout','/api/password','/api/odoo-status']);
    if(!allowed.has(path))fail('الوظائف الإدارية القديمة معطلة في بوابة الموظف',410);
    const b=req.method==='POST'?await readBody(req):null;if(b)prune(s);
    if(path==='/api/setup'&&b){if(setupToken.length<32)fail('التهيئة غير مفعلة؛ اضبط MADAR_SETUP_TOKEN في الاستضافة',503);if(s.users.length)fail('تمت تهيئة المنصة مسبقًا',409);attempt(s,'setup');if(typeof b.token!=='string'||!same(b.token,setupToken))failedAttempt(s,'setup');required(b,'name');if(!email(b.email))fail('بريد غير صالح');const u={id:id(),email:b.email.trim().toLowerCase(),name:b.name,password:await hashPassword(b.password),role:'owner',company_id:null,employee_id:null,active:1};s.users.push(u);delete s.attempts.setup;audit(s,u,'تهيئة المنصة','users',u.id);await commit();return response({ok:true},201);}
@@ -142,6 +143,7 @@ export function createHandler({stateStore,fileStore,setupToken='',recoveryKey=''
    }
    if(path==='/api/login'&&b){if(typeof b.email!=='string'||b.email.length>254)fail('بيانات غير صالحة');const identifier=b.email.trim().toLowerCase().replace(/[٠-٩]/g,c=>String('٠١٢٣٤٥٦٧٨٩'.indexOf(c))).replace(/[۰-۹]/g,c=>String('۰۱۲۳۴۵۶۷۸۹'.indexOf(c)));const u=s.users.find(x=>x.active&&(x.email===identifier||x.username===identifier));const key=sha(u?.email||identifier);attempt(s,key);if(!u||!await verify(b.password,u.password)){failedAttempt(s,key);}delete s.attempts[key];const raw=token();s.sessions.push({token:sha(raw),csrf:token(),user_id:u.id,expires:Date.now()+SESSION_MS});audit(s,u,'تسجيل دخول','users');await commit();return response({ok:true},200,{'Set-Cookie':cookie(raw,secure)});}
    const {u,sess}=session(s,req);if(b&&!same(req.headers.get('x-csrf-token'),sess.csrf))fail('رمز الحماية غير صالح؛ حدّث الصفحة',403);
+   if(path==='/api/odoo-status'&&!b){if(u.role!=='owner')fail('للمسؤول فقط',403);try{return response(await odooConnectionCheck());}catch{return response({configured:true,connected:false,error:'تعذر التحقق من اتصال أودو'},503);}}
    if(path==='/api/me'&&!b)return response({...publicUser(u),csrf:sess.csrf,trial:true,mode:s.settings?.mode||'legacy'});
    if(path==='/api/self-service-config'){
     if(u.role!=='owner')fail('للمسؤول فقط',403);
