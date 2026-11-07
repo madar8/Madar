@@ -7,6 +7,7 @@ test('identity normalizes Arabic digits and rejects missing or invalid identity'
 test('profile reads only allowed fields and reports unavailable sections',async()=>{const calls=[];const p=await readProfile(async(model,method,args,kwargs)=>{calls.push({model,method,args,kwargs});if(model!=='hr.employee')throw Error('access denied');if(method==='fields_get')return {name:{string:'Name'},identification_id:{string:'ID'},pin:{string:'Private credential'}};return [{id:777,name:'Employee'}];},777);assert.equal(p.employee.id,777);assert(!p.labels.pin);assert(p.sections.every(s=>s.status==='unavailable'));assert(calls.every(c=>['read','search_read','fields_get'].includes(c.method)));assert.deepEqual(calls.find(c=>c.method==='read').args,[[777]]);});
 test('activation requires valid unexpired code, is single use and permits identity login',async()=>{
  let data=emptyState(),version=1;
+ data.records.push({id:'e',module:'employees',status:'نشط'});
  data.users.push({id:'u',role:'employee',username:'1234567890',email:'one@employee.test',name:'Test',employee_id:'e',company_id:'c',active:0,password:'disabled',activation_hash:createHash('sha256').update('test-private-activation-code').digest('hex'),activation_expires:Date.now()+100000});
  const store={async getWithMetadata(){return {data:structuredClone(data),etag:String(version)};},async setJSON(k,v,opts){if(opts.onlyIfMatch!==String(version))return {modified:false};data=structuredClone(v);version++;return {modified:true};}};
  const api=createHandler({stateStore:store,fileStore:{},secure:true});
