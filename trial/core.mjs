@@ -1,11 +1,16 @@
 import {odooConnectionCheck,odooEmployeeById} from './odoo-readonly.mjs';
-import {randomBytes,createHash,scrypt as scryptCallback,timingSafeEqual} from 'node:crypto';
+import {randomBytes,createHash,createHmac,scrypt as scryptCallback,timingSafeEqual} from 'node:crypto';
 import {promisify} from 'node:util';
 import C from './config.json' with {type:'json'};
 const scrypt=promisify(scryptCallback);
 export const MAX_FILE=2*1024*1024,MAX_STATE=4*1024*1024,MAX_RECORDS=2000,MAX_FILES_TOTAL=20*1024*1024;
 const BODY_LIMIT=3*1024*1024,SESSION_MS=8*3600000;
 const id=()=>randomBytes(12).toString('hex'),token=()=>randomBytes(32).toString('base64url');
+const base32Alphabet='ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+function base32(buf){let bits=0,value=0,out='';for(const byte of buf){value=(value<<8)|byte;bits+=8;while(bits>=5){out+=base32Alphabet[(value>>>(bits-=5))&31];}}if(bits)out+=base32Alphabet[(value<<(5-bits))&31];return out;}
+function decode32(s){let bits=0,value=0,out=[];for(const ch of s){const n=base32Alphabet.indexOf(ch);if(n<0)return null;value=(value<<5)|n;bits+=5;if(bits>=8){out.push((value>>>(bits-=8))&255);}}return Buffer.from(out);}
+function totp(secret,step){const key=decode32(secret);if(!key)return '';const msg=Buffer.alloc(8);msg.writeBigUInt64BE(BigInt(step));const mac=createHmac('sha1',key).update(msg).digest();const offset=mac[19]&15;return String((mac.readUInt32BE(offset)&0x7fffffff)%1000000).padStart(6,'0');}
+function validTotp(secret,code,lastStep=-1){if(!/^\\d{6}$/.test(String(code||'')))return -1;const now=Math.floor(Date.now()/30000);for(let step=now-1;step<=now+1;step++){if(step>lastStep&&same(totp(secret,step),code))return step;}return -1;}
 const sha=s=>createHash('sha256').update(s).digest('hex');
 const stamp=()=>new Date().toISOString();
 const day=()=>new Date(Date.now()+3*3600000).toISOString().slice(0,10);
@@ -40,7 +45,7 @@ function required(d,k){if(typeof d[k]!=='string'||!d[k].trim()||d[k].length>1200
 function date(d,k,optional=false){if(optional&&!d[k])return;if(typeof d[k]!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(d[k])||!Number.isFinite(Date.parse(d[k]))||new Date(d[k]).toISOString().slice(0,10)!==d[k])fail('تاريخ غير صالح: '+k);}
 function integer(d,k,defaultValue=0){d[k]??=defaultValue;if(!Number.isSafeInteger(d[k])||d[k]<0||d[k]>100000000)fail('قيمة رقمية غير صالحة: '+k);}
 const email=e=>typeof e==='string'&&/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)&&e.length<=254;
-function publicUser(u){const {password,activation_hash,activation_expires,...out}=u;return out;}
+function publicUser(u){const {password,activation_hash,activation_expires,totp_secret,totp_pending,totp_last_step,...out}=u;return out;}
 function visible(u,r,m){if(['owner','hr'].includes(u.role))return true;if(r.company_id!==u.company_id)return false;if(u.role==='employee'){if(m==='employees')return r.id===u.employee_id;if(['requests','attendance','contracts','documents'].includes(m))return r.employee_id===u.employee_id;if(m==='tickets')return r.created_by===u.id;}return true;}
 function get(s,m,rid){const r=s.records.find(r=>r.module===m&&r.id===rid);if(!r)fail('السجل غير موجود',404);return r;}
 function permitted(u,m,write=false){if(!(write?C.write:C.read)[u.role]?.includes(m))fail('ليست لديك صلاحية',403);}
@@ -103,7 +108,7 @@ export function createHandler({stateStore,fileStore,setupToken='',recoveryKey=''
    const entry=await stateStore.getWithMetadata('workspace-v1',{type:'json',consistency:'strong'});s=entry?structuredClone(entry.data):emptyState();etag=entry?.etag;if(s.format!=='madar-trial-v1')fail('تنسيق البيانات غير متوافق',503);
    if(path==='/api/health'&&req.method==='GET')return response({status:'ok',version:'0.2.0-trial',mode:'trial',max_upload_bytes:MAX_FILE,setup_required:setupToken.length>=32&&!s.users.length});
    // Phase 1: employee-only preview. Keep existing stored records intact but disable all legacy HR and admin API routes.
-   const allowed=new Set(['/api/health','/api/setup','/api/activate-employee','/api/login','/api/me','/api/logout','/api/password','/api/odoo-status','/api/employee-profile']);
+   const allowed=new Set(['/api/health','/api/setup','/api/activate-employee','/api/login','/api/me','/api/logout','/api/password','/api/odoo-status','/api/employee-profile','/api/totp-begin','/api/totp-confirm']);
    if(!allowed.has(path))fail('الوظائف الإدارية القديمة معطلة في بوابة الموظف',410);
    const b=req.method==='POST'?await readBody(req):null;if(b)prune(s);
    if(path==='/api/setup'&&b){if(setupToken.length<32)fail('التهيئة غير مفعلة؛ اضبط MADAR_SETUP_TOKEN في الاستضافة',503);if(s.users.length)fail('تمت تهيئة المنصة مسبقًا',409);attempt(s,'setup');if(typeof b.token!=='string'||!same(b.token,setupToken))failedAttempt(s,'setup');required(b,'name');if(!email(b.email))fail('بريد غير صالح');const u={id:id(),email:b.email.trim().toLowerCase(),name:b.name,password:await hashPassword(b.password),role:'owner',company_id:null,employee_id:null,active:1};s.users.push(u);delete s.attempts.setup;audit(s,u,'تهيئة المنصة','users',u.id);await commit();return response({ok:true},201);}
@@ -141,7 +146,7 @@ export function createHandler({stateStore,fileStore,setupToken='',recoveryKey=''
     if(!s.records.some(e=>e.module==='employees'&&e.id===user.employee_id&&e.status==='نشط'))fail('الحساب غير متاح للتفعيل؛ راجع المسؤول',403);
     user.password=await hashPassword(b.password);user.active=1;delete user.activation_hash;delete user.activation_expires;s.sessions=s.sessions.filter(x=>x.user_id!==user.id);delete s.attempts[key];audit(s,user,'تفعيل حساب الموظف','users',user.id,user.company_id);await commit();return response({ok:true});
    }
-   if(path==='/api/login'&&b){if(typeof b.email!=='string'||b.email.length>254)fail('بيانات غير صالحة');const identifier=b.email.trim().toLowerCase().replace(/[٠-٩]/g,c=>String('٠١٢٣٤٥٦٧٨٩'.indexOf(c))).replace(/[۰-۹]/g,c=>String('۰۱۲۳۴۵۶۷۸۹'.indexOf(c)));const u=s.users.find(x=>x.active&&(x.email===identifier||x.username===identifier));const key=sha(u?.email||identifier);attempt(s,key);if(!u||!await verify(b.password,u.password)){failedAttempt(s,key);}delete s.attempts[key];const raw=token();s.sessions.push({token:sha(raw),csrf:token(),user_id:u.id,expires:Date.now()+SESSION_MS});audit(s,u,'تسجيل دخول','users');await commit();return response({ok:true},200,{'Set-Cookie':cookie(raw,secure)});}
+   if(path==='/api/login'&&b){if(typeof b.email!=='string'||b.email.length>254)fail('بيانات غير صالحة');const identifier=b.email.trim().toLowerCase().replace(/[٠-٩]/g,c=>String('٠١٢٣٤٥٦٧٨٩'.indexOf(c))).replace(/[۰-۹]/g,c=>String('۰۱۲۳۴۵۶۷۸۹'.indexOf(c)));const u=s.users.find(x=>x.active&&(x.email===identifier||x.username===identifier));const key=sha(u?.email||identifier);attempt(s,key);if(!u||!await verify(b.password,u.password)){failedAttempt(s,key);}if(u.totp_secret){const step=validTotp(u.totp_secret,b.otp,u.totp_last_step??-1);if(step<0)failedAttempt(s,key);u.totp_last_step=step;}delete s.attempts[key];const raw=token();s.sessions.push({token:sha(raw),csrf:token(),user_id:u.id,expires:Date.now()+SESSION_MS});audit(s,u,'تسجيل دخول','users');await commit();return response({ok:true},200,{'Set-Cookie':cookie(raw,secure)});}
    const {u,sess}=session(s,req);if(b&&!same(req.headers.get('x-csrf-token'),sess.csrf))fail('رمز الحماية غير صالح؛ حدّث الصفحة',403);
    if(path==='/api/employee-profile'&&!b){
     if(u.role!=='employee'||!u.employee_id)fail('لا يوجد ملف موظف مرتبط بهذا الحساب',403);
@@ -171,6 +176,8 @@ export function createHandler({stateStore,fileStore,setupToken='',recoveryKey=''
    if(s.settings?.mode==='self-service'&&b&&(!['/api/logout','/api/password'].includes(path)))fail('استخدم بوابة الخدمات الذاتية؛ إدارة الشركات والعمليات القديمة متوقفة',410);
    if(path==='/api/data'&&!b)return response(Object.fromEntries(C.read[u.role].map(m=>[m,list(s,u,m)])));
    if(path==='/api/logout'&&b){s.sessions=s.sessions.filter(x=>x.token!==sess.token);await commit();return response({ok:true},200,{'Set-Cookie':cookie('',secure,true)});}
+   if(path==='/api/totp-begin'&&b){if(!await verify(b.password,u.password))fail('كلمة المرور غير صحيحة',403);if(u.totp_secret)fail('المصادقة مفعّلة بالفعل',409);const secret=base32(randomBytes(20));u.totp_pending={secret,expires:Date.now()+10*60000};await commit();return response({secret,uri:'otpauth://totp/'+encodeURIComponent('Madar:'+ (u.username||u.email||u.id))+'?secret='+secret+'&issuer=Madar&algorithm=SHA1&digits=6&period=30'});}
+   if(path==='/api/totp-confirm'&&b){if(!u.totp_pending||u.totp_pending.expires<Date.now())fail('انتهت مهلة إعداد المصادقة؛ ابدأ من جديد',400);const step=validTotp(u.totp_pending.secret,b.code);if(step<0)fail('رمز المصادقة غير صحيح',403);u.totp_secret=u.totp_pending.secret;u.totp_last_step=step;delete u.totp_pending;s.sessions=s.sessions.filter(x=>x.user_id===u.id&&x.token===sess.token);audit(s,u,'تفعيل المصادقة الثنائية','users',u.id);await commit();return response({ok:true});}
    if(path==='/api/password'&&b){if(!await verify(b.current,u.password))fail('كلمة المرور الحالية غير صحيحة',403);u.password=await hashPassword(b.password);s.sessions=s.sessions.filter(x=>x.user_id!==u.id);audit(s,u,'تغيير كلمة المرور','users',u.id);await commit();return response({ok:true},200,{'Set-Cookie':cookie('',secure,true)});}
    if(path==='/api/users'){
     if(u.role!=='owner')fail('للمالك فقط',403);if(!b)return response(s.users.map(publicUser));if(s.users.length>=50)fail('حد التجربة 50 مستخدمًا',413);required(b,'name');if(!email(b.email)||!Object.hasOwn(C.read,b.role))fail('البريد أو الدور غير صالح');const e=b.email.trim().toLowerCase();if(s.users.some(x=>x.email===e))fail('البريد موجود بالفعل',409);let cid=null,eid=null;
