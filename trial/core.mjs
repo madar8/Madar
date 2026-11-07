@@ -14,6 +14,24 @@ const same=(a,b)=>{const x=Buffer.isBuffer(a)?a:Buffer.from(String(a??'')),y=Buf
 export async function hashPassword(password){if(typeof password!=='string'||password.length<12||password.length>200)fail('كلمة المرور من 12 إلى 200 حرف');const salt=randomBytes(16).toString('hex');return salt+':'+Buffer.from(await scrypt(password,Buffer.from(salt,'hex'),64,{N:16384,r:8,p:1})).toString('hex');}
 async function verify(password,stored){if(typeof password!=='string'||password.length>200)return false;const [salt,digest]=String(stored||'').split(':');if(!/^[a-f0-9]{32}$/.test(salt)||!/^[a-f0-9]{128}$/.test(digest))return false;const result=Buffer.from(await scrypt(password,Buffer.from(salt,'hex'),64,{N:16384,r:8,p:1}));return same(result,Buffer.from(digest,'hex'));}
 export const emptyState=()=>({format:'madar-trial-v1',users:[],sessions:[],records:[],audit:[],attempts:{}});
+export function convertToSelfService(s){
+ if(s.settings?.mode==='self-service')return {already:true,removed:0};
+ const names=new Set(['شركة أفق التجريبية','شركة نواة التجريبية','شركة مدى التجريبية']);
+ const demoCompanies=new Set(s.records.filter(r=>r.module==='companies'&&names.has(r.name)&&r.email==='demo@example.test'&&r.contact==='مسؤول تجريبي').map(r=>r.id));
+ const removed=s.records.filter(r=>demoCompanies.has(r.id)||(!r.odoo_id&&demoCompanies.has(r.company_id)));
+ const removedIds=new Set(removed.map(r=>r.id));
+ const sourceCompanies=s.records.filter(r=>r.module==='companies'&&!removedIds.has(r.id));
+ const companyName=sourceCompanies.find(r=>r.id.startsWith('odoo-company-'))?.name||sourceCompanies[0]?.name||'جهة العمل';
+ const cid='madar-organization';
+ s.records=s.records.filter(r=>!removedIds.has(r.id)&&r.module!=='companies');
+ for(const r of s.records){if(r.company_id){r.source_company_id??=r.company_id;r.company_id=cid;}}
+ s.records.push({id:cid,module:'companies',company_id:null,name:companyName,status:'نشط',version:1,created:stamp()});
+ const removedUsers=new Set(s.users.filter(u=>u.role!=='owner'&&removedIds.has(u.employee_id)).map(u=>u.id));
+ s.users=s.users.filter(u=>!removedUsers.has(u.id));for(const u of s.users){if(u.company_id){u.source_company_id??=u.company_id;u.company_id=cid;}}
+ s.sessions=s.sessions.filter(x=>!removedUsers.has(x.user_id));
+ s.settings={...s.settings,mode:'self-service',company_id:cid,company_name:companyName,converted_at:stamp(),removed_demo_records:removed.length};
+ return {already:false,removed:removed.length};
+}
 const HEADERS={'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff','X-Frame-Options':'DENY','Referrer-Policy':'same-origin','Content-Security-Policy':"default-src 'self'; frame-ancestors 'none'; base-uri 'none'"};
 function response(data,status=200,extra={}){return new Response(JSON.stringify(data),{status,headers:{...HEADERS,...extra}});}
 function cookie(value,secure,clear=false){return `madar_session=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${clear?0:28800}${secure?'; Secure':''}`;}
@@ -121,7 +139,22 @@ export function createHandler({stateStore,fileStore,setupToken='',recoveryKey=''
    }
    if(path==='/api/login'&&b){if(typeof b.email!=='string'||b.email.length>254)fail('بيانات غير صالحة');const identifier=b.email.trim().toLowerCase().replace(/[٠-٩]/g,c=>String('٠١٢٣٤٥٦٧٨٩'.indexOf(c))).replace(/[۰-۹]/g,c=>String('۰۱۲۳۴۵۶۷۸۹'.indexOf(c)));const u=s.users.find(x=>x.active&&(x.email===identifier||x.username===identifier));const key=sha(u?.email||identifier);attempt(s,key);if(!u||!await verify(b.password,u.password)){failedAttempt(s,key);}delete s.attempts[key];const raw=token();s.sessions.push({token:sha(raw),csrf:token(),user_id:u.id,expires:Date.now()+SESSION_MS});audit(s,u,'تسجيل دخول','users');await commit();return response({ok:true},200,{'Set-Cookie':cookie(raw,secure)});}
    const {u,sess}=session(s,req);if(b&&!same(req.headers.get('x-csrf-token'),sess.csrf))fail('رمز الحماية غير صالح؛ حدّث الصفحة',403);
-   if(path==='/api/me'&&!b)return response({...publicUser(u),csrf:sess.csrf,trial:true});
+   if(path==='/api/me'&&!b)return response({...publicUser(u),csrf:sess.csrf,trial:true,mode:s.settings?.mode||'legacy'});
+   if(path==='/api/self-service-config'){
+    if(u.role!=='owner')fail('للمسؤول فقط',403);
+    if(!b)return response({mode:s.settings?.mode||'legacy',company:s.settings?.company_name||'',employees:s.records.filter(r=>r.module==='employees'&&r.odoo_id).length,accounts:s.users.filter(x=>x.role==='employee'&&x.odoo_id).length,removed_demo_records:s.settings?.removed_demo_records||0});
+    if(b.action==='convert'){
+     if(s.settings?.mode!=='self-service')await stateStore.setJSON('workspace-before-self-service-v1',s,{onlyIfNew:true});
+     const result=convertToSelfService(s);if(!result.already){audit(s,u,'تحويل إلى خدمات ذاتية وحذف الأمثلة مع نسخة استعادة','settings');await commit();}return response({ok:true,...result});
+    }
+    if(b.action==='restore'){
+     const backup=await stateStore.getWithMetadata('workspace-before-self-service-v1',{type:'json',consistency:'strong'});if(!backup?.data)fail('لا توجد نسخة استعادة',404);
+     const restored=structuredClone(backup.data);restored.sessions=s.sessions.filter(x=>restored.users.some(v=>v.id===x.user_id));s=restored;audit(s,u,'استعادة النسخة السابقة للتحويل','settings');await commit();return response({ok:true});
+    }
+    fail('إجراء غير متاح');
+   }
+   if(path==='/api/demo')fail('الأمثلة التجريبية غير متاحة في مدار للخدمات الذاتية',410);
+   if(s.settings?.mode==='self-service'&&b&&(!['/api/logout','/api/password'].includes(path)))fail('استخدم بوابة الخدمات الذاتية؛ إدارة الشركات والعمليات القديمة متوقفة',410);
    if(path==='/api/data'&&!b)return response(Object.fromEntries(C.read[u.role].map(m=>[m,list(s,u,m)])));
    if(path==='/api/logout'&&b){s.sessions=s.sessions.filter(x=>x.token!==sess.token);await commit();return response({ok:true},200,{'Set-Cookie':cookie('',secure,true)});}
    if(path==='/api/password'&&b){if(!await verify(b.current,u.password))fail('كلمة المرور الحالية غير صحيحة',403);u.password=await hashPassword(b.password);s.sessions=s.sessions.filter(x=>x.user_id!==u.id);audit(s,u,'تغيير كلمة المرور','users',u.id);await commit();return response({ok:true},200,{'Set-Cookie':cookie('',secure,true)});}
@@ -132,20 +165,6 @@ export function createHandler({stateStore,fileStore,setupToken='',recoveryKey=''
    }
    if(path.startsWith('/api/users/')&&b){if(u.role!=='owner')fail('للمالك فقط',403);const target=s.users.find(x=>x.id===path.split('/').pop());if(!target)fail('المستخدم غير موجود',404);if(target.id===u.id)fail('لا يمكنك تعديل حسابك من هنا');if(b.action==='disable')target.active=0;else if(b.action==='reset'){target.password=await hashPassword(b.password);target.active=1;}else fail('إجراء غير صالح');s.sessions=s.sessions.filter(x=>x.user_id!==target.id);audit(s,u,b.action,'users',target.id,target.company_id);await commit();return response({ok:true});}
    if(path==='/api/audit'&&!b){if(!['owner','hr'].includes(u.role))fail('ليست لديك صلاحية',403);return response(s.audit.slice(-500).reverse());}
-   if(path==='/api/demo'&&b){
-    if(u.role!=='owner')fail('للمالك فقط',403);if(s.records.length)fail('البيانات التجريبية متاحة فقط قبل إضافة سجلات',409);
-    for(const [name,sector] of [['شركة أفق التجريبية','تقنية'],['شركة نواة التجريبية','تجارة'],['شركة مدى التجريبية','استشارات']]){
-     const company=createRecord(s,u,'companies',{name,contact:'مسؤول تجريبي',sector,status:'نشط',plan:'تجربة مدار',email:'demo@example.test'});
-     for(const [person,title,department]of [['موظف تجريبي ١','محلل أعمال','العمليات'],['موظفة تجريبية ٢','أخصائية موارد بشرية','الموارد البشرية']]){
-      const employee=createRecord(s,u,'employees',{company_id:company.id,name:person,title,department,start_date:'2026-01-01',base:850000,allowance:100000,deduction:0,leave_balance:21,status:'نشط',email:'employee@example.test',phone:''});
-      createRecord(s,u,'requests',{company_id:company.id,employee_id:employee.id,kind:'إجازة',start_date:'2026-12-01',end_date:'2026-12-03',reason:'مثال تجريبي'});
-     }
-     const job=createRecord(s,u,'jobs',{company_id:company.id,title:'أخصائي نجاح عملاء — تجربة',department:'العمليات',location:'الرياض',openings:2,status:'مفتوحة',description:'وصف تجريبي قابل للتعديل'});
-     createRecord(s,u,'candidates',{company_id:company.id,name:'مرشح تجريبي',email:'candidate@example.test',phone:'',job_id:job.id,stage:'مقابلة',notes:''});
-     createRecord(s,u,'tickets',{company_id:company.id,title:'تجهيز خطة التهيئة — تجربة',priority:'عادي',description:'طلب خدمة تجريبي',status:'قيد المعالجة'});
-    }
-    audit(s,u,'تحميل أمثلة تجريبية','companies');await commit();return response({ok:true},201);
-   }
    if(path==='/api/backup'&&!b){if(u.role!=='owner')fail('للمالك فقط',403);return response({format:'madar-portable-v1',exported_at:stamp(),users:s.users.map(publicUser),audit:s.audit,records:Object.fromEntries(Object.keys(C.modules).map(m=>[m,list(s,u,m)])),note:'لا يشمل كلمات المرور أو الملفات؛ صدّر المستندات من روابط التنزيل أو ملف الترحيل الكامل.'});}
    if(path==='/api/transfer'&&!b){if(u.role!=='owner')fail('للمالك فقط',403);const docs=s.records.filter(r=>r.module==='documents');let bytes=0;const files=[];for(const r of docs){const data=await fileStore.get(r.storage,{type:'arrayBuffer',consistency:'strong'});if(!data)fail('مستند مفقود؛ راجع الاستضافة',503);bytes+=data.byteLength;if(bytes>3*1024*1024)fail('صدّر المستندات منفردة لأن مجموعها يتجاوز حد ملف النقل الواحد',413);files.push({record_id:r.id,filename:r.filename,mime:r.mime,content:Buffer.from(data).toString('base64')});}const payload={format:'madar-transfer-v1',exported_at:stamp(),users:s.users.map(publicUser),audit:s.audit,records:Object.fromEntries(Object.keys(C.modules).map(m=>[m,list(s,u,m)])),files,note:'ملف حساس يحتوي بياناتك ومستنداتك. أعد تعيين كلمات المرور عند نقل الحسابات.'};if(Buffer.byteLength(JSON.stringify(payload))>5*1024*1024)fail('ملف النقل كبير؛ صدّر JSON والمستندات منفردة',413);return response(payload,200,{'Content-Disposition':'attachment; filename="madar-transfer.json"'});}
    const parts=path.split('/').filter(Boolean),m=parts[1],rid=parts[2];if(!Object.hasOwn(C.modules,m))fail('المسار غير موجود',404);
