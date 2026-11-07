@@ -18,16 +18,20 @@ const specs=[
  ['documents','المستندات (بيانات وصفية)','ir.attachment','res_id',['name','mimetype','file_size','create_date','res_model']]
 ];
 export async function readProfile(rpc,eid){
- const schema=await rpc('hr.employee','fields_get',[],{attributes:['string','type']});
+ const schema=await rpc('hr.employee','fields_get',[],{attributes:['string','type','relation']});
  const selected=fields.filter(k=>schema[k]);const rows=await rpc('hr.employee','read',[[eid]],{fields:selected,context:{active_test:false}});
  if(rows.length!==1)die('ملف الموظف غير متاح',404);
  const sections=[];
  for(const [key,label,model,relation,wanted] of specs){
   try{
-   const f=await rpc(model,'fields_get',[],{attributes:['string','type']});
+   const f=await rpc(model,'fields_get',[],{attributes:['string','type','relation']});
    if(!f[relation])throw Error('Unsupported relation');
    const cols=wanted.filter(k=>f[k]);
-   const domain=[[relation,'=',eid],...(model==='ir.attachment'?[['res_model','=','hr.employee']]:[])];
+   const related=f[relation].relation;
+   const lookup=related==='res.partner'?rows[0].address_home_id?.[0]:eid;
+   if(related&& !['hr.employee','res.partner'].includes(related))throw Error('Unexpected employee relation');
+   if(!lookup)throw Error('Missing source employee contact');
+   const domain=[[relation,'=',lookup],...(model==='ir.attachment'?[['res_model','=','hr.employee']]:[])];
    const records=await rpc(model,'search_read',[domain],{fields:cols,limit:501,order:'id desc',context:{active_test:false}});
    sections.push({key,label,status:records.length>500?'partial':'ok',rows:records.slice(0,500),columns:Object.fromEntries(cols.map(k=>[k,f[k].string]))});
   }catch{sections.push({key,label,status:'unavailable',rows:[],columns:{}});}
@@ -35,15 +39,18 @@ export async function readProfile(rpc,eid){
  return {employee:rows[0],labels:Object.fromEntries(selected.map(k=>[k,schema[k].string])),sections,synced_at:new Date().toISOString(),note:'المزامنة قراءة من أودو. المستندات بيانات وصفية؛ الملفات المرفقة والصور غير منسوخة.'};
 }
 export async function readProfiles(rpc,ids){
- const schema=await rpc('hr.employee','fields_get',[],{attributes:['string','type']});
+ const schema=await rpc('hr.employee','fields_get',[],{attributes:['string','type','relation']});
  const selected=fields.filter(k=>schema[k]),rows=await rpc('hr.employee','read',[ids],{fields:selected,context:{active_test:false}});
  const result=rows.map(e=>({employee:e,labels:Object.fromEntries(selected.map(k=>[k,schema[k].string])),sections:[],synced_at:new Date().toISOString(),note:'قراءة من أودو؛ المرفقات والصور ليست منسوخة.'}));
  for(const [key,label,model,relation,wanted] of specs){
   try{
-   const f=await rpc(model,'fields_get',[],{attributes:['string','type']});if(!f[relation])throw Error('Unsupported relation');
+   const f=await rpc(model,'fields_get',[],{attributes:['string','type','relation']});if(!f[relation])throw Error('Unsupported relation');
+   const related=f[relation].relation;
+   if(related&&!['hr.employee','res.partner'].includes(related))throw Error('Unexpected relation');
+   const sourceIds=related==='res.partner'?result.map(p=>p.employee.address_home_id?.[0]).filter(Boolean):ids;
    const cols=[...new Set([relation,...wanted.filter(k=>f[k])])],all=[];let cursor=0,partial=false;
-   for(;;){const domain=[[relation,'in',ids],['id','>',cursor],...(model==='ir.attachment'?[['res_model','=','hr.employee']]:[])];const page=await rpc(model,'search_read',[domain],{fields:cols,limit:1000,order:'id',context:{active_test:false}});all.push(...page);if(page.length<1000)break;if(all.length>=10000){partial=true;break;}const next=page.at(-1).id;if(next<=cursor)throw Error('No progress');cursor=next;}
-   for(const profile of result){const mine=all.filter(r=>(Array.isArray(r[relation])?r[relation][0]:r[relation])===profile.employee.id);profile.sections.push({key,label,status:partial||mine.length>500?'partial':'ok',rows:mine.slice(0,500),columns:Object.fromEntries(wanted.filter(k=>f[k]).map(k=>[k,f[k].string]))});}
+   for(;;){const domain=[[relation,'in',sourceIds],['id','>',cursor],...(model==='ir.attachment'?[['res_model','=','hr.employee']]:[])];const page=await rpc(model,'search_read',[domain],{fields:cols,limit:1000,order:'id',context:{active_test:false}});all.push(...page);if(page.length<1000)break;if(all.length>=10000){partial=true;break;}const next=page.at(-1).id;if(next<=cursor)throw Error('No progress');cursor=next;}
+   for(const profile of result){const mine=all.filter(r=>(Array.isArray(r[relation])?r[relation][0]:r[relation])===(related==='res.partner'?profile.employee.address_home_id?.[0]:profile.employee.id));profile.sections.push({key,label,status:partial||mine.length>500?'partial':'ok',rows:mine.slice(0,500),columns:Object.fromEntries(wanted.filter(k=>f[k]).map(k=>[k,f[k].string]))});}
   }catch{for(const profile of result)profile.sections.push({key,label,status:'unavailable',rows:[],columns:{}});}
  }
  return result;
@@ -139,7 +146,7 @@ function text(v){return v===false||v===null||v===undefined?'غير مسجل':Arr
 async function view(id){const d=await call(null,id);$('#profile').replaceChildren();if(!d.profile){$('#profile').textContent='تفاصيل الملف لم تزامن بعد.';return;}const p=d.profile;const h=document.createElement('h2');h.textContent=p.employee.name;$('#profile').append(h);const note=document.createElement('p');note.textContent='آخر مزامنة: '+new Date(p.synced_at).toLocaleString('ar-SA')+' · '+p.note;$('#profile').append(note);
 function table(title,rows,cols){const section=document.createElement('section');section.className='panel';const heading=document.createElement('h3');heading.textContent=title;section.append(heading);const wrap=document.createElement('div');wrap.className='table-wrap';const table=document.createElement('table');const head=document.createElement('tr');for(const label of Object.values(cols)){const th=document.createElement('th');th.textContent=label;head.append(th);}table.append(head);for(const row of rows){const tr=document.createElement('tr');for(const k of Object.keys(cols)){const td=document.createElement('td');td.textContent=text(row[k]);tr.append(td);}table.append(tr);}wrap.append(table);section.append(wrap);$('#profile').append(section);}
 table('الملف الوظيفي والشخصي',Object.entries(p.labels).map(([k,v])=>({label:v,value:text(p.employee[k])})),{label:'البيان',value:'القيمة'});
-for(const s of p.sections){if(s.status==='unavailable'){const x=document.createElement('p');x.textContent=s.label+': غير متاح بالحساب الحالي أو غير مثبت في أودو';$('#profile').append(x);}else table(s.label+' — '+s.rows.length+(s.status==='partial'?' (عرض جزئي)':''),s.rows,s.columns);}}
+for(const s of p.sections){if(s.status==='unavailable'){const x=document.createElement('p');x.textContent=s.label+': غير متاح بالحساب الحالي أو غير مثبت في أودو';$('#profile').append(x);}else table(s.label+' — سجلات متاحة: '+s.rows.length+(s.status==='partial'?' (عرض جزئي)':''),s.rows,s.columns);}}
 async function run(fn){if(busy)return;busy=true;$('#message').textContent='جارٍ التنفيذ…';try{await fn();}catch(e){$('#message').textContent=e.message;}finally{busy=false;}}
 $('#activate').onsubmit=async e=>{e.preventDefault();run(async()=>{const r=await fetch('/api/activate-employee',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({identity:$('#identity').value,code:$('#code').value,password:$('#newpassword').value})});const d=await r.json();if(!r.ok)throw Error(d.error);$('#activate').reset();$('#message').textContent='تم التفعيل. ادخل مدار برقم الهوية وكلمة المرور التي اخترتها.';});};
 $('#sync').onclick=()=>run(async()=>{let cursor=0,total=0,conflicts=[];do{const d=await call({action:'sync',cursor});total+=d.count;conflicts.push(...d.conflicts);$('#message').textContent='تمت مزامنة '+total+' ملفًا…';if(d.done)break;if(d.next<=cursor)throw Error('توقف تقدم المزامنة');cursor=d.next;}while(true);await list();$('#message').textContent='تمت مزامنة '+total+' ملفًا. الحالات التي تحتاج مراجعة: '+conflicts.join('، ');});
