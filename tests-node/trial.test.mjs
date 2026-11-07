@@ -60,3 +60,15 @@ test('full transfer restores records, files and owner into a fresh portable runt
   await post('users/'+originalClient.id,{action:'reset',password:'ResetClientPassword123!'},200);const restoredClient=await login(originalClient.email,'ResetClientPassword123!');assert.equal((await call('employees',undefined,restoredClient)).data.length,1);
  }finally{await rm(dir,{recursive:true,force:true});}
 });
+test('owner recovery preserves records, revokes sessions and enables username login once',async()=>{
+ const secret='one-time-test-recovery-secret-'.repeat(2);
+ api=createHandler({stateStore:state,fileStore:files,recoveryKey:`${Date.now()+60000}:${secret}`});
+ const body={email:owner.email,token:secret,username:'Madar8',password:'NewOwnerPassword123!'};
+ assert.equal((await call('recover-owner',{...body,token:'wrong'},null)).status,403);
+ assert.equal((await call('recover-owner',body,null)).status,200);
+ assert.equal((await call('recover-owner',body,null)).status,403);
+ assert.equal((await call('me')).status,401);
+ const restored=await login('madar8',body.password);
+ assert.equal(restored.id,owner.id);
+ assert.equal((await call('companies',undefined,restored)).data.length,2);
+});

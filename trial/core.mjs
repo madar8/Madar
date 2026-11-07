@@ -75,7 +75,7 @@ async function readBody(req){const length=Number(req.headers.get('content-length
 async function upload(s,u,b,files){if(!['owner','hr','client'].includes(u.role))fail('ليست لديك صلاحية',403);required(b,'title');required(b,'filename');const cid=['owner','hr'].includes(u.role)?b.company_id:u.company_id;get(s,'companies',cid);if(get(s,'employees',b.employee_id).company_id!==cid)fail('الموظف خارج الشركة',403);date(b,'expires',true);if(typeof b.content!=='string'||!/^([A-Za-z0-9+/]{4})*([A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(b.content))fail('ملف غير صالح');const data=Buffer.from(b.content,'base64');if(!data.length||data.length>MAX_FILE)fail('الملف فارغ أو يتجاوز 2 ميغابايت',413);const total=s.records.filter(x=>x.module==='documents').reduce((n,x)=>n+(x.size||0),0);if(total+data.length>MAX_FILES_TOTAL)fail('بلغت التجربة حد 20 ميغابايت للمستندات',413);
  const ext=b.filename.split('.').pop().toLowerCase(),types={pdf:['255044462d','application/pdf'],png:['89504e470d0a1a0a','image/png'],jpg:['ffd8ff','image/jpeg'],jpeg:['ffd8ff','image/jpeg']},t=types[ext];if(!t||!data.subarray(0,t[0].length/2).equals(Buffer.from(t[0],'hex')))fail('المسموح PDF أو PNG أو JPG مطابق لنوعه');const storage=id()+'.'+ext;const r=insert(s,'documents',cid,{title:b.title,employee_id:b.employee_id,expires:b.expires||'',filename:b.filename.split(/[\\/]/).pop(),mime:t[1],storage,size:data.length,created_by:u.id});await files.set(storage,data);audit(s,u,'رفع مستند','documents',r.id,cid);return{record:cleanRecord(r),storage};}
 
-export function createHandler({stateStore,fileStore,setupToken='',secure=true}){
+export function createHandler({stateStore,fileStore,setupToken='',recoveryKey='',secure=true}){
  return async function handle(req){let s,etag,wroteFile;let committed=false;
   async function commit(){if(Buffer.byteLength(JSON.stringify(s))>MAX_STATE)fail('حجم بيانات التجربة تجاوز الحد؛ صدّرها قبل التوسع',413);const result=await stateStore.setJSON('workspace-v1',s,etag?{onlyIfMatch:etag}:{onlyIfNew:true});if(!result.modified)fail('تزامن تعديل آخر؛ حدّث الصفحة وأعد المحاولة',409);committed=true;}
   try{
@@ -85,7 +85,32 @@ export function createHandler({stateStore,fileStore,setupToken='',secure=true}){
    if(path==='/api/health'&&req.method==='GET')return response({status:'ok',version:'0.2.0-trial',mode:'trial',max_upload_bytes:MAX_FILE,setup_required:setupToken.length>=32&&!s.users.length});
    const b=req.method==='POST'?await readBody(req):null;if(b)prune(s);
    if(path==='/api/setup'&&b){if(setupToken.length<32)fail('التهيئة غير مفعلة؛ اضبط MADAR_SETUP_TOKEN في الاستضافة',503);if(s.users.length)fail('تمت تهيئة المنصة مسبقًا',409);attempt(s,'setup');if(typeof b.token!=='string'||!same(b.token,setupToken))failedAttempt(s,'setup');required(b,'name');if(!email(b.email))fail('بريد غير صالح');const u={id:id(),email:b.email.trim().toLowerCase(),name:b.name,password:await hashPassword(b.password),role:'owner',company_id:null,employee_id:null,active:1};s.users.push(u);delete s.attempts.setup;audit(s,u,'تهيئة المنصة','users',u.id);await commit();return response({ok:true},201);}
-   if(path==='/api/login'&&b){if(typeof b.email!=='string'||b.email.length>254)fail('بيانات غير صالحة');const key=sha(b.email.trim().toLowerCase());attempt(s,key);const u=s.users.find(x=>x.active&&x.email===b.email.trim().toLowerCase());if(!u||!await verify(b.password,u.password)){failedAttempt(s,key);}delete s.attempts[key];const raw=token();s.sessions.push({token:sha(raw),csrf:token(),user_id:u.id,expires:Date.now()+SESSION_MS});audit(s,u,'تسجيل دخول','users');await commit();return response({ok:true},200,{'Set-Cookie':cookie(raw,secure)});}
+   if(path==='/api/recover-owner'&&b){
+    const [expires, secret] = recoveryKey.split(':');
+    const recoveryId = sha(recoveryKey);
+    if(!secret || secret.length<32 || !(Number(expires)>Date.now()) || s.usedOwnerRecovery===recoveryId)
+     fail('رمز الاستعادة غير متاح أو انتهت صلاحيته',403);
+    attempt(s,'owner-recovery');
+    const owner = typeof b.email==='string' && s.users.find(user =>
+     user.role==='owner' && user.active && user.email===b.email.trim().toLowerCase());
+    if(!owner || typeof b.token!=='string' || !same(b.token,secret))
+     failedAttempt(s,'owner-recovery');
+    const username = typeof b.username==='string' ? b.username.trim().toLowerCase() : '';
+    if(username && !/^[a-z0-9][a-z0-9_.-]{2,31}$/.test(username))
+     fail('اسم المستخدم من 3 إلى 32 حرفًا إنجليزيًا أو رقمًا، ويمكن إضافة نقطة أو شرطة');
+    if(username && s.users.some(user => user.id!==owner.id && user.username===username))
+     fail('اسم المستخدم مستخدم بالفعل',409);
+    owner.password = await hashPassword(b.password);
+    if(username)owner.username=username;
+    s.usedOwnerRecovery = recoveryId;
+    delete s.attempts['owner-recovery'];
+    delete s.attempts[sha(owner.email)];
+    s.sessions = s.sessions.filter(session => session.user_id!==owner.id);
+    audit(s,owner,'استعادة كلمة مرور المالك','users',owner.id);
+    await commit();
+    return response({ok:true},200,{'Set-Cookie':cookie('',secure,true)});
+   }
+   if(path==='/api/login'&&b){if(typeof b.email!=='string'||b.email.length>254)fail('بيانات غير صالحة');const identifier=b.email.trim().toLowerCase();const u=s.users.find(x=>x.active&&(x.email===identifier||x.username===identifier));const key=sha(u?.email||identifier);attempt(s,key);if(!u||!await verify(b.password,u.password)){failedAttempt(s,key);}delete s.attempts[key];const raw=token();s.sessions.push({token:sha(raw),csrf:token(),user_id:u.id,expires:Date.now()+SESSION_MS});audit(s,u,'تسجيل دخول','users');await commit();return response({ok:true},200,{'Set-Cookie':cookie(raw,secure)});}
    const {u,sess}=session(s,req);if(b&&!same(req.headers.get('x-csrf-token'),sess.csrf))fail('رمز الحماية غير صالح؛ حدّث الصفحة',403);
    if(path==='/api/me'&&!b)return response({...publicUser(u),csrf:sess.csrf,trial:true});
    if(path==='/api/data'&&!b)return response(Object.fromEntries(C.read[u.role].map(m=>[m,list(s,u,m)])));
