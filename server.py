@@ -375,12 +375,13 @@ class Handler(BaseHTTPRequestHandler):
     if not isinstance(password,str) or len(password)>200: raise Problem('بيانات الدخول غير صحيحة',401)
     key=hashlib.sha256(email.encode()).hexdigest();attempt=c.execute('SELECT * FROM login_attempts WHERE key=?',(key,)).fetchone()
     if attempt and attempt['reset']>time.time() and attempt['attempts']>=10: raise Problem('محاولات كثيرة؛ أعد المحاولة بعد 15 دقيقة',429)
-    user=c.execute('SELECT * FROM users WHERE email=? AND active=1',(email,)).fetchone()
-    if not user or not verify(password,user['password']):
+    enrollment=c.execute("SELECT u.* FROM employee_enrollment e JOIN users u ON u.id=e.user_id WHERE e.national_id=? AND e.invite_used=1 AND u.active=1 AND u.role='employee'",(email,)).fetchone() if valid_national_id(email) else None
+    user=enrollment if enrollment else c.execute('SELECT * FROM users WHERE email=? AND active=1',(email,)).fetchone()
+    otp=c.execute('SELECT * FROM totp_accounts WHERE user_id=? AND enabled=1',(user['id'],)).fetchone() if user else None
+    if not user or (not (enrollment and otp) and not verify(password,user['password'])):
      count=attempt['attempts']+1 if attempt and attempt['reset']>time.time() else 1
      reset=attempt['reset'] if attempt and attempt['reset']>time.time() else time.time()+900
      c.execute('INSERT OR REPLACE INTO login_attempts VALUES(?,?,?)',(key,count,reset));c.commit();raise Problem('البريد أو كلمة المرور غير صحيحة',401)
-    otp=c.execute('SELECT * FROM totp_accounts WHERE user_id=? AND enabled=1',(user['id'],)).fetchone()
     if otp:
      step=verify_totp(otp['secret'],body.get('otp'),otp['last_step'])
      if step<0:
@@ -415,6 +416,18 @@ class Handler(BaseHTTPRequestHandler):
     return self.reply(200,{'ok':True})
    if path=='/api/logout' and self.command=='POST':
     c.execute('DELETE FROM sessions WHERE token=?',(token,));c.commit();return self.reply(200,{'ok':True},self.cookie('',True))
+   if path=='/api/enrollment-issue' and self.command=='POST':
+    if u['role'] not in ('owner','hr'): raise Problem('للموارد البشرية أو المالك فقط',403)
+    b=self.body();uid=b.get('user_id');nid=b.get('national_id')
+    target=c.execute("SELECT * FROM users WHERE id=? AND role='employee' AND active=1",(uid,)).fetchone()
+    if not target or not valid_national_id(nid): raise Problem('حدد حساب موظف ورقم هوية صالحًا',400)
+    if u['role']=='hr' and target['company_id']!=u['company_id']: raise Problem('ليست لديك صلاحية',403)
+    current=c.execute('SELECT enabled FROM totp_accounts WHERE user_id=?',(uid,)).fetchone()
+    if current and current['enabled']: raise Problem('الحساب مفعّل؛ يلزم إجراء استعادة آمن',409)
+    invite=secrets.token_urlsafe(24)
+    c.execute('INSERT INTO employee_enrollment(user_id,national_id,invite_hash,invite_expires,invite_used) VALUES(?,?,?,?,0) ON CONFLICT(user_id) DO UPDATE SET national_id=excluded.national_id,invite_hash=excluded.invite_hash,invite_expires=excluded.invite_expires,invite_used=0',(uid,nid,invite_digest(invite),time.time()+86400))
+    log(c,u,'إصدار دعوة تفعيل','users',uid,target['company_id']);c.commit()
+    return self.reply(200,{'invite':invite,'expires_in_seconds':86400})
    if path=='/api/users':
     if u['role']!='owner': raise Problem('للمالك فقط',403)
     if self.command=='GET': return self.reply(200,[dict(r) for r in c.execute('SELECT id,name,email,role,company_id,employee_id,active FROM users')])
