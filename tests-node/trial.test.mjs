@@ -50,7 +50,7 @@ test('invalid scalar, dates, money and prototype roles rejected',async()=>{await
 test('audit and data export omit credential hashes',async()=>{const a=await call('audit'),b=await call('backup'),users=await call('users');for(const r of [a,b,users])assert(!JSON.stringify(r.data).includes('password'));});
 test('failed login locks the account key after 10 attempts',async()=>{for(let i=0;i<10;i++)assert.equal((await call('login',{email:'wrong@example.test',password:'wrong'},null)).status,403);assert.equal((await call('login',{email:'wrong@example.test',password:'wrong'},null)).status,429);});
 test('scrypt hashes use distinct salts and no raw passwords',async()=>{const a=await hashPassword('Password123456!'),b=await hashPassword('Password123456!');assert.notEqual(a,b);assert(!a.includes('Password'));assert.equal(a.length,161);});
-test('demo seeding is explicit, atomic and once-only for empty workspaces',async()=>{const fresh=new MemoryStore();api=createHandler({stateStore:fresh,fileStore:files,setupToken:SECRET});await post('setup',{token:SECRET,email:'owner@madar.test',name:'مدير',password:'OwnerPassword123!'},201,null);owner=await login('owner@madar.test');await post('demo',{},201);assert.equal((await call('companies')).data.length,3);assert.equal((await call('employees')).data.length,6);await post('demo',{},409);});
+test('demo creation is unavailable and never mutates real records',async()=>{const before=(await call('employees')).data;await post('demo',{},410);assert.deepEqual((await call('employees')).data,before);});
 test('full transfer restores records, files and owner into a fresh portable runtime',async()=>{
  const {mkdtemp,writeFile,rm}=await import('node:fs/promises');const {tmpdir}=await import('node:os');const {join}=await import('node:path');const {execFile}=await import('node:child_process');const {promisify}=await import('node:util');const {fileStore}=await import('../trial/file-store.mjs');const dir=await mkdtemp(join(tmpdir(),'madar-transfer-'));
  try{
@@ -72,3 +72,4 @@ test('owner recovery preserves records, revokes sessions and enables username lo
  assert.equal(restored.id,owner.id);
  assert.equal((await call('companies',undefined,restored)).data.length,2);
 });
+
