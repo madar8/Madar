@@ -336,6 +336,40 @@ class Handler(BaseHTTPRequestHandler):
     c.execute('INSERT INTO users(id,email,name,password,role) VALUES(?,?,?,?,?)',(uid,b['email'].strip().lower(),b['name'],hash_password(b.get('password')),'owner'))
     log(c,{'id':uid,'name':b['name']},'تهيئة المنصة','users',uid)
     c.execute("DELETE FROM login_attempts WHERE key='bootstrap'");c.commit();return self.reply(201,{'ok':True})
+   if path=='/api/enroll-begin' and self.command=='POST':
+    b=self.body();nid=b.get('national_id','');last=b.get('last4','');invite=b.get('invite','')
+    if not valid_national_id(nid) or not isinstance(last,str) or not hmac.compare_digest(nid[-4:],last): raise Problem('بيانات التفعيل غير صحيحة',403)
+    key=invite_digest('enroll:'+nid);attempt=c.execute('SELECT * FROM login_attempts WHERE key=?',(key,)).fetchone()
+    if attempt and attempt['reset']>time.time() and attempt['attempts']>=5: raise Problem('محاولات كثيرة؛ انتظر 15 دقيقة',429)
+    row=c.execute('SELECT e.*,u.email,u.active,u.role FROM employee_enrollment e JOIN users u ON u.id=e.user_id WHERE e.national_id=?',(nid,)).fetchone()
+    allowed=row and row['active'] and row['role']=='employee' and not row['invite_used'] and row['invite_expires']>time.time() and isinstance(invite,str) and hmac.compare_digest(row['invite_hash'],invite_digest(invite))
+    if not allowed:
+     count=attempt['attempts']+1 if attempt and attempt['reset']>time.time() else 1
+     reset=attempt['reset'] if attempt and attempt['reset']>time.time() else time.time()+900
+     c.execute('INSERT OR REPLACE INTO login_attempts VALUES(?,?,?)',(key,count,reset));c.commit();raise Problem('تعذر التفعيل؛ راجع مسؤول الموارد البشرية',403)
+    existing=c.execute('SELECT enabled FROM totp_accounts WHERE user_id=?',(row['user_id'],)).fetchone()
+    if existing and existing['enabled']: raise Problem('الحساب مفعّل بالفعل',409)
+    secret=base64.b32encode(secrets.token_bytes(20)).decode().rstrip('=')
+    uri='otpauth://totp/Madar:'+nid+'?secret='+secret+'&issuer=Madar&algorithm=SHA1&digits=6&period=30'
+    qr=qrcode.make(uri);out=io.BytesIO();qr.save(out,format='PNG')
+    c.execute('INSERT OR REPLACE INTO totp_accounts(user_id,secret,enabled,expires,last_step) VALUES(?,?,0,?,-1)',(row['user_id'],secret,time.time()+600))
+    c.execute('DELETE FROM login_attempts WHERE key=?',(key,));c.commit()
+    return self.reply(200,{'qr':'data:image/png;base64,'+base64.b64encode(out.getvalue()).decode(),'secret':secret,'uri':uri})
+   if path=='/api/enroll-confirm' and self.command=='POST':
+    b=self.body();nid=b.get('national_id','');invite=b.get('invite','')
+    row=c.execute('SELECT e.*,u.active,u.role FROM employee_enrollment e JOIN users u ON u.id=e.user_id WHERE e.national_id=?',(nid,)).fetchone() if valid_national_id(nid) else None
+    if not row or not row['active'] or row['role']!='employee' or row['invite_used'] or row['invite_expires']<time.time() or not isinstance(invite,str) or not hmac.compare_digest(row['invite_hash'],invite_digest(invite)): raise Problem('بيانات التفعيل غير صحيحة',403)
+    account=c.execute('SELECT * FROM totp_accounts WHERE user_id=? AND enabled=0',(row['user_id'],)).fetchone()
+    if not account or account['expires']<time.time(): raise Problem('انتهت مهلة الباركود؛ ابدأ مجددًا',400)
+    step=verify_totp(account['secret'],b.get('code'))
+    if step<0: raise Problem('رمز المصادقة غير صحيح',403)
+    c.execute('UPDATE totp_accounts SET enabled=1,last_step=? WHERE user_id=?',(step,row['user_id']))
+    c.execute('UPDATE employee_enrollment SET invite_used=1,invite_hash=? WHERE user_id=?',(invite_digest(secrets.token_urlsafe(32)),row['user_id']))
+    raw=secrets.token_urlsafe(32);csrf=secrets.token_urlsafe(32)
+    c.execute('INSERT INTO sessions VALUES(?,?,?,?)',(invite_digest(raw),row['user_id'],csrf,time.time()+SESSION_SECONDS))
+    user=c.execute('SELECT * FROM users WHERE id=?',(row['user_id'],)).fetchone()
+    log(c,dict(user),'تفعيل المصادقة','users',row['user_id']);c.commit()
+    return self.reply(200,{'ok':True},self.cookie(raw))
    if path=='/api/login' and self.command=='POST':
     body=self.body();email=str(body.get('email','')).strip().lower();password=body.get('password','')
     if not isinstance(password,str) or len(password)>200: raise Problem('بيانات الدخول غير صحيحة',401)
