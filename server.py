@@ -9,7 +9,7 @@ import qrcode
 ROOT = Path(__file__).parent
 DATA = Path(os.environ.get('MADAR_DATA_DIR', ROOT / 'data'))
 SECURE = os.environ.get('MADAR_SECURE_COOKIE') == '1'
-SESSION_SECONDS = 8 * 3600
+SESSION_SECONDS = 30 * 24 * 3600
 MODULES = {
  'companies': ['name','sector','contact','email','plan','status'],
  'employees': ['name','email','phone','title','department','start_date','status','base','allowance','deduction','leave_balance'],
@@ -55,6 +55,7 @@ def migrate():
   CREATE INDEX IF NOT EXISTS records_scope ON records(module,company_id);
   CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id TEXT,actor TEXT NOT NULL,action TEXT NOT NULL,module TEXT NOT NULL,record_id TEXT,company_id TEXT,created TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS login_attempts(key TEXT PRIMARY KEY,attempts INTEGER NOT NULL,reset REAL NOT NULL);
+  CREATE TABLE IF NOT EXISTS employee_enrollment(user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,national_id TEXT NOT NULL UNIQUE,invite_hash TEXT NOT NULL,invite_expires REAL NOT NULL,invite_used INTEGER NOT NULL DEFAULT 0);
   CREATE TABLE IF NOT EXISTS totp_accounts(user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,secret TEXT NOT NULL,enabled INTEGER NOT NULL DEFAULT 0,expires REAL NOT NULL,last_step INTEGER NOT NULL DEFAULT -1);
   CREATE UNIQUE INDEX IF NOT EXISTS payroll_unique ON records(company_id,json_extract(data,'$.period')) WHERE module='payroll';
   CREATE UNIQUE INDEX IF NOT EXISTS attendance_unique ON records(company_id,json_extract(data,'$.employee_id'),json_extract(data,'$.day')) WHERE module='attendance';
@@ -69,6 +70,9 @@ def verify(password, stored):
   salt,digest=stored.split(':')
   return hmac.compare_digest(hashlib.scrypt(password.encode(),salt=bytes.fromhex(salt),n=16384,r=8,p=1).hex(),digest)
  except (ValueError,AttributeError): return False
+
+def valid_national_id(v): return isinstance(v,str) and bool(re.fullmatch(r'[12][0-9]{9}',v))
+def invite_digest(v): return hashlib.sha256(v.encode()).hexdigest()
 
 def totp_code(secret,step):
  key=base64.b32decode(secret)
