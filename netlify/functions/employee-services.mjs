@@ -47,7 +47,7 @@ export default async function service(req){
  const handler=createHandler({stateStore:getStore({name:'madar-trial-state',consistency:'strong'}),fileStore:getStore('madar-trial-documents'),setupToken:process.env.MADAR_SETUP_TOKEN||'',secure:true});
  const read=async path=>{const r=await handler(new Request(url.origin+path,{headers:req.headers}));if(!r.ok)fail('سجّل الدخول إلى مدار أولًا',401);return r.json();};
  const me=await read('/api/me');if(!['owner','employee'].includes(me.role))fail('الخدمة متاحة لمالك المنصة والموظف',403);
- const data=await read('/api/data'),employees=data.employees||[];
+ const data=await read('/api/data'),employees=(data.employees||[]).filter(e=>e.odoo_id);
  const store=getStore({name:'madar-self-service',consistency:'strong'});
  let entry=await store.getWithMetadata('state',{type:'json',consistency:'strong'}),state=entry?.data||{maps:{},requests:[]};
  const commit=async()=>{const r=await store.setJSON('state',state,entry?{onlyIfMatch:entry.etag}:{onlyIfNew:true});if(!r.modified)fail('حدث تعديل متزامن؛ حدّث الشاشة',409);entry=await store.getWithMetadata('state',{type:'json',consistency:'strong'});state=entry.data;};

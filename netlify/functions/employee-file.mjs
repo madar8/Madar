@@ -80,7 +80,7 @@ export default async function employeeFile(req){
   const commit=async()=>{if(Buffer.byteLength(JSON.stringify(s))>4*1024*1024)die('مساحة بيانات التجربة ممتلئة',413);const r=await ws.setJSON('workspace-v1',s,{onlyIfMatch:entry.etag});if(!r.modified)die('تعديل متزامن؛ أعد المحاولة',409);};
   if(b.action==='activation'){
    const user=s.users.find(x=>x.id===b.user_id&&x.role==='employee'&&x.odoo_id);
-   if(!user)die('الحساب غير متاح',404);if(user.active)die('الحساب مفعل بالفعل؛ إعادة كلمة المرور من إدارة الحسابات',409);
+   if(!user||!s.records.some(e=>e.module==='employees'&&e.id===user.employee_id&&e.status==='نشط'))die('الحساب غير متاح للتفعيل',404);if(user.active)die('الحساب مفعل بالفعل؛ إعادة كلمة المرور من إدارة الحسابات',409);
    const code=randomBytes(18).toString('base64url');user.activation_hash=sha(code);user.activation_expires=Date.now()+24*3600000;
    s.audit.push({user_id:me.id,actor:me.name,action:'إصدار رمز تفعيل',module:'users',record_id:user.id,created:new Date().toISOString()});await commit();
    return out({code,expires:'24 ساعة',name:user.name});
