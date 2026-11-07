@@ -43,3 +43,9 @@ body:has(.auth-shell) .auth-form input{text-align:right}
 body:has(.auth-shell) .auth-error{text-align:right}
 @media(min-width:901px){body:has(.auth-shell) .auth-shell{display:flex!important}body:has(.auth-shell) .auth-panel{width:min(100%,480px)}}
 @media(max-width:480px){body:has(.auth-shell) .auth-shell{padding:12px}body:has(.auth-shell) .auth-panel{padding:25px 20px;border-radius:20px}body:has(.auth-shell) .mobile-brand{margin-bottom:22px!important}}
+
+/* Fix: logo must be FIRST, above the login heading, not beside the form */
+body:has(.auth-shell) .auth-panel{flex-direction:column!important;justify-content:center!important;align-items:center!important;gap:0!important}
+body:has(.auth-shell) .mobile-brand{width:100%!important;display:flex!important;flex-direction:column!important;align-items:center!important;justify-content:center!important;position:static!important;float:none!important;flex:none!important;order:0!important;margin:0 0 28px!important;text-align:center!important;white-space:normal!important}
+body:has(.auth-shell) .mobile-brand small{display:block!important;text-align:center!important}
+body:has(.auth-shell) .auth-form-wrap{order:1!important;flex:none!important;min-width:0!important}
