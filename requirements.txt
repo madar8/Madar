@@ -1,1 +1,2 @@
 gunicorn==26.2.0
+qrcode==8.2
