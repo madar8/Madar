@@ -1,5 +1,5 @@
 // Read-only Odoo JSON-2 integration. Credentials must live in Netlify environment variables.
-const fields=['id','name','work_email','work_phone','mobile_phone','job_title','department_id','company_id','work_location_id','parent_id','active'];
+const fields=['id','name','work_email','work_phone','mobile_phone','job_title','department_id','company_id','work_location_id','parent_id','active','barcode'];
 export function odooConfigured(env=process.env){return Boolean(env.ODOO_URL&&env.ODOO_API_KEY);}
 export async function odooEmployeeById(employeeId,{env=process.env,fetcher=fetch}={}){
  if(!odooConfigured(env))throw Error('اتصال أودو غير مهيأ في الاستضافة');
