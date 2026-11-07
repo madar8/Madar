@@ -1,0 +1,18 @@
+{
+  "id": "/",
+  "name": "مدار | إدارة الموارد البشرية",
+  "short_name": "مدار",
+  "description": "مساحة عمل لإدارة الموارد البشرية والتوظيف",
+  "lang": "ar",
+  "dir": "rtl",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#0a2926",
+  "icons": [
+    { "src": "/icons/madar-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/madar-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/madar-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
