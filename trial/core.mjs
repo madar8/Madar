@@ -103,7 +103,7 @@ export function createHandler({stateStore,fileStore,setupToken='',recoveryKey=''
    const entry=await stateStore.getWithMetadata('workspace-v1',{type:'json',consistency:'strong'});s=entry?structuredClone(entry.data):emptyState();etag=entry?.etag;if(s.format!=='madar-trial-v1')fail('تنسيق البيانات غير متوافق',503);
    if(path==='/api/health'&&req.method==='GET')return response({status:'ok',version:'0.2.0-trial',mode:'trial',max_upload_bytes:MAX_FILE,setup_required:setupToken.length>=32&&!s.users.length});
    // Phase 1: employee-only preview. Keep existing stored records intact but disable all legacy HR and admin API routes.
-   const allowed=new Set(['/api/health','/api/setup','/api/login','/api/me','/api/logout','/api/password','/api/odoo-status','/api/employee-profile']);
+   const allowed=new Set(['/api/health','/api/setup','/api/activate-employee','/api/login','/api/me','/api/logout','/api/password','/api/odoo-status','/api/employee-profile']);
    if(!allowed.has(path))fail('الوظائف الإدارية القديمة معطلة في بوابة الموظف',410);
    const b=req.method==='POST'?await readBody(req):null;if(b)prune(s);
    if(path==='/api/setup'&&b){if(setupToken.length<32)fail('التهيئة غير مفعلة؛ اضبط MADAR_SETUP_TOKEN في الاستضافة',503);if(s.users.length)fail('تمت تهيئة المنصة مسبقًا',409);attempt(s,'setup');if(typeof b.token!=='string'||!same(b.token,setupToken))failedAttempt(s,'setup');required(b,'name');if(!email(b.email))fail('بريد غير صالح');const u={id:id(),email:b.email.trim().toLowerCase(),name:b.name,password:await hashPassword(b.password),role:'owner',company_id:null,employee_id:null,active:1};s.users.push(u);delete s.attempts.setup;audit(s,u,'تهيئة المنصة','users',u.id);await commit();return response({ok:true},201);}
