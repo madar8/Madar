@@ -114,13 +114,13 @@ export default async function employeeFile(req){
    const services=getStore({name:'madar-self-service',consistency:'strong'});
    const mapEntry=await services.getWithMetadata('state',{type:'json',consistency:'strong'}),mapState=mapEntry?.data||{maps:{},requests:[]};
    for(const e of data){
-    const eid='odoo-employee-'+e.id,cid='odoo-company-'+e.company_id?.[0],identity=nationalId(e.identification_id);
+    const eid='odoo-employee-'+e.id,cid=s.settings?.mode==='self-service'?s.settings.company_id:'odoo-company-'+e.company_id?.[0],identity=nationalId(e.identification_id);
     if(s.records.length>=2000&&!s.records.some(r=>r.id===eid)){conflicts.push(e.name+': حد السجلات التجريبية');continue;}
     if(!e.company_id?.[0]){conflicts.push(e.name+': لا توجد شركة');continue;}
     if(!s.records.some(r=>r.id===cid))s.records.push({id:cid,module:'companies',company_id:null,name:e.company_id[1],status:'نشط',version:1,created:new Date().toISOString()});
     const existing=s.records.find(r=>r.id===eid);
     if(existing&&existing.odoo_id!==e.id){conflicts.push(e.name+': تعارض مصدر');continue;}
-    const basic={name:e.name,email:e.work_email||'',phone:e.work_phone||'',title:e.job_title||'غير مسجل',department:e.department_id?.[1]||'',status:e.active?'نشط':'غير نشط',odoo_id:e.id,source:'lanamed.odoo.com',updated:new Date().toISOString()};
+    const basic={...(s.settings?.mode==='self-service'?{company_id:cid}:{}),odoo_company_id:e.company_id?.[0],name:e.name,email:e.work_email||'',phone:e.work_phone||'',title:e.job_title||'غير مسجل',department:e.department_id?.[1]||'',status:e.active?'نشط':'غير نشط',odoo_id:e.id,source:'lanamed.odoo.com',updated:new Date().toISOString()};
     if(existing)Object.assign(existing,basic,{version:existing.version+1});
     else s.records.push({...basic,id:eid,module:'employees',company_id:cid,base:null,allowance:null,deduction:null,leave_balance:null,start_date:'',version:1,created:new Date().toISOString()});
     imported.push({id:eid,odoo_id:e.id});
@@ -128,7 +128,7 @@ export default async function employeeFile(req){
     if(pid&&!mapState.maps[eid]&&!Object.values(mapState.maps).some(m=>m.partner_id===pid))mapState.maps[eid]={partner_id:pid,name:e.address_home_id[1],odoo_employee_id:e.id,linked_by:me.id,linked_at:new Date().toISOString(),source:'hr.employee.address_home_id'};
     if(!identity){conflicts.push(e.name+': الهوية غير مسجلة أو غير صالحة');continue;}
     const old=s.users.find(u=>u.username===identity||u.odoo_id===e.id);
-    if(old){if(old.odoo_id!==e.id||old.employee_id!==eid){conflicts.push(e.name+': هوية مستخدمة بحساب آخر');continue;}if(!e.active){old.active=0;s.sessions=s.sessions.filter(x=>x.user_id!==old.id);}if(old.username!==identity)conflicts.push(e.name+': تغير رقم الهوية؛ يحتاج مراجعة');continue;}
+    if(old){if(s.settings?.mode==='self-service')old.company_id=cid;if(old.odoo_id!==e.id||old.employee_id!==eid){conflicts.push(e.name+': هوية مستخدمة بحساب آخر');continue;}if(!e.active){old.active=0;s.sessions=s.sessions.filter(x=>x.user_id!==old.id);}if(old.username!==identity)conflicts.push(e.name+': تغير رقم الهوية؛ يحتاج مراجعة');continue;}
     s.users.push({id:randomBytes(12).toString('hex'),name:e.name,email:'odoo-'+e.id+'@employee.madar.invalid',username:identity,password:'disabled',role:'employee',company_id:cid,employee_id:eid,odoo_id:e.id,active:0});accounts++;
    }
    s.audit.push({user_id:me.id,actor:me.name,action:'مزامنة ملفات أودو',module:'employees',count:imported.length,created:new Date().toISOString()});s.audit=s.audit.slice(-1000);await commit();
