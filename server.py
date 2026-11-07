@@ -3,7 +3,8 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from http.cookies import SimpleCookie
 from pathlib import Path
 from urllib.parse import urlparse
-import argparse, base64, datetime as dt, getpass, hashlib, hmac, json, os, re, secrets, sqlite3, time
+import argparse, base64, datetime as dt, getpass, hashlib, hmac, json, os, re, secrets, sqlite3, time, io
+import qrcode
 
 ROOT = Path(__file__).parent
 DATA = Path(os.environ.get('MADAR_DATA_DIR', ROOT / 'data'))
@@ -54,6 +55,7 @@ def migrate():
   CREATE INDEX IF NOT EXISTS records_scope ON records(module,company_id);
   CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id TEXT,actor TEXT NOT NULL,action TEXT NOT NULL,module TEXT NOT NULL,record_id TEXT,company_id TEXT,created TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS login_attempts(key TEXT PRIMARY KEY,attempts INTEGER NOT NULL,reset REAL NOT NULL);
+  CREATE TABLE IF NOT EXISTS totp_accounts(user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,secret TEXT NOT NULL,enabled INTEGER NOT NULL DEFAULT 0,expires REAL NOT NULL,last_step INTEGER NOT NULL DEFAULT -1);
   CREATE UNIQUE INDEX IF NOT EXISTS payroll_unique ON records(company_id,json_extract(data,'$.period')) WHERE module='payroll';
   CREATE UNIQUE INDEX IF NOT EXISTS attendance_unique ON records(company_id,json_extract(data,'$.employee_id'),json_extract(data,'$.day')) WHERE module='attendance';
   ''')
@@ -67,6 +69,18 @@ def verify(password, stored):
   salt,digest=stored.split(':')
   return hmac.compare_digest(hashlib.scrypt(password.encode(),salt=bytes.fromhex(salt),n=16384,r=8,p=1).hex(),digest)
  except (ValueError,AttributeError): return False
+
+def totp_code(secret,step):
+ key=base64.b32decode(secret)
+ digest=hmac.new(key,int(step).to_bytes(8,'big'),hashlib.sha1).digest()
+ offset=digest[-1]&15
+ return str((int.from_bytes(digest[offset:offset+4],'big')&0x7fffffff)%1000000).zfill(6)
+def verify_totp(secret,code,last_step=-1):
+ if not isinstance(code,str) or not re.fullmatch(r'[0-9]{6}',code): return -1
+ now_step=int(time.time()//30)
+ for step in range(now_step-1,now_step+2):
+  if step>last_step and hmac.compare_digest(totp_code(secret,step),code): return step
+ return -1
 
 def unpack(row):
  return {'id':row['id'],'company_id':row['company_id'],'version':row['version'],'created':row['created'],'updated':row['updated'],**json.loads(row['data'])}
@@ -328,6 +342,14 @@ class Handler(BaseHTTPRequestHandler):
      count=attempt['attempts']+1 if attempt and attempt['reset']>time.time() else 1
      reset=attempt['reset'] if attempt and attempt['reset']>time.time() else time.time()+900
      c.execute('INSERT OR REPLACE INTO login_attempts VALUES(?,?,?)',(key,count,reset));c.commit();raise Problem('البريد أو كلمة المرور غير صحيحة',401)
+    otp=c.execute('SELECT * FROM totp_accounts WHERE user_id=? AND enabled=1',(user['id'],)).fetchone()
+    if otp:
+     step=verify_totp(otp['secret'],body.get('otp'),otp['last_step'])
+     if step<0:
+      count=attempt['attempts']+1 if attempt and attempt['reset']>time.time() else 1
+      reset=attempt['reset'] if attempt and attempt['reset']>time.time() else time.time()+900
+      c.execute('INSERT OR REPLACE INTO login_attempts VALUES(?,?,?)',(key,count,reset));c.commit();raise Problem('رمز تطبيق المصادقة غير صحيح',401)
+     c.execute('UPDATE totp_accounts SET last_step=? WHERE user_id=?',(step,user['id']))
     c.execute('DELETE FROM login_attempts WHERE key=?',(key,));c.execute('DELETE FROM sessions WHERE expires<?',(time.time(),))
     raw=secrets.token_urlsafe(32);csrf=secrets.token_urlsafe(32)
     c.execute('INSERT INTO sessions VALUES(?,?,?,?)',(hashlib.sha256(raw.encode()).hexdigest(),user['id'],csrf,time.time()+SESSION_SECONDS));log(c,dict(user),'تسجيل دخول','users');c.commit()
@@ -335,6 +357,24 @@ class Handler(BaseHTTPRequestHandler):
    u,token=self.session(c)
    if self.command=='POST': self.csrf(u)
    if path=='/api/me' and self.command=='GET': return self.reply(200,{k:u[k] for k in ('id','name','email','role','company_id','employee_id','csrf')})
+   if path=='/api/totp-begin' and self.command=='POST':
+    b=self.body()
+    if not verify(b.get('password'),u['password']): raise Problem('كلمة المرور الحالية غير صحيحة',403)
+    existing=c.execute('SELECT enabled FROM totp_accounts WHERE user_id=?',(u['id'],)).fetchone()
+    if existing and existing['enabled']: raise Problem('المصادقة مفعلة بالفعل',409)
+    secret=base64.b32encode(secrets.token_bytes(20)).decode().rstrip('=')
+    uri='otpauth://totp/Madar:'+u['email']+'?secret='+secret+'&issuer=Madar&algorithm=SHA1&digits=6&period=30'
+    qr=qrcode.make(uri);out=io.BytesIO();qr.save(out,format='PNG')
+    c.execute('INSERT OR REPLACE INTO totp_accounts(user_id,secret,enabled,expires,last_step) VALUES(?,?,0,?,-1)',(u['id'],secret,time.time()+600));c.commit()
+    return self.reply(200,{'secret':secret,'qr':'data:image/png;base64,'+base64.b64encode(out.getvalue()).decode(),'uri':uri})
+   if path=='/api/totp-confirm' and self.command=='POST':
+    b=self.body();account=c.execute('SELECT * FROM totp_accounts WHERE user_id=? AND enabled=0',(u['id'],)).fetchone()
+    if not account or account['expires']<time.time(): raise Problem('انتهت مهلة الإعداد، ابدأ مجددًا',400)
+    step=verify_totp(account['secret'],b.get('code'))
+    if step<0: raise Problem('رمز التحقق غير صحيح',403)
+    c.execute('UPDATE totp_accounts SET enabled=1,last_step=? WHERE user_id=?',(step,u['id']))
+    log(c,u,'تفعيل المصادقة الثنائية','users',u['id']);c.commit()
+    return self.reply(200,{'ok':True})
    if path=='/api/logout' and self.command=='POST':
     c.execute('DELETE FROM sessions WHERE token=?',(token,));c.commit();return self.reply(200,{'ok':True},self.cookie('',True))
    if path=='/api/users':
